@@ -19,6 +19,7 @@
     "package:dir": "pnpm build && node scripts/package-dir.mjs && node scripts/verify-packaged-runtime.mjs && node scripts/smoke-dsh-host.mjs --packaged",
     "verify:package": "node scripts/verify-packaged-runtime.mjs",
     "smoke:host": "pnpm build:main && pnpm build:plugin && node scripts/smoke-dsh-host.mjs",
+    "smoke:host:restart": "pnpm build:main && pnpm build:plugin && node scripts/smoke-dsh-host-restart.mjs",
     "smoke:host:package": "node scripts/smoke-dsh-host.mjs --packaged",
     "smoke:agent-tools": "pnpm build:main && pnpm build:plugin && node scripts/smoke-dsh-agent-tools.mjs",
     "smoke:gui:package": "node scripts/smoke-electron-gui.mjs"

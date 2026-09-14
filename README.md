@@ -22,6 +22,7 @@ pnpm build
 pnpm package:dir
 pnpm verify:package
 pnpm smoke:host
+pnpm smoke:host:restart
 pnpm smoke:host:package
 pnpm smoke:agent-tools
 pnpm smoke:gui:package
@@ -49,7 +50,7 @@ DSH `0.1.5-rc.2` 的部分间接依赖仍会被包管理器解析到旧版；`pn
 3. 将分析队列扩展为具备稳定候选人关联的队列和可编辑证据的人工复核流程；目前只按简历内容指纹与岗位条件快照保存记录，没有稳定的站点候选人 ID。同名或简历更新都不能自动认定为同一人。人工状态只表示卡片处理进度，不表示技能已确认或已联系候选人。Agent 决策与页面动作保持分离。第一版不追问薪资或求职意向。
 4. 继续验证正式发行链路。当前 macOS 未签名目录包已包含 DSH CLI 和 AgentHR 插件；`verify:package` 检查包内依赖、插件导入、配置合成及 Electron 内置 SQLite，`smoke:host:package` 已从包内 Electron Node 启动 Host 并取得认证后的本地 Agent 页面。`smoke:gui:package` 在隔离的离线模式下验证了 App 主窗口、React 工作台和 preload 桥接。尚未验证 Windows 包、真实网站登录流程、签名和更新机制，因此不能视为正式发行包。
 
-Host 重试只恢复 DSH 服务和 Agent 窗口入口；正在运行的 Agent 任务会中断。DSH 会话内容能否在真实招聘操作中按预期恢复，仍需招聘人员在实际使用流程里验证。
+`smoke:host:restart` 已在隔离目录启动真实 DSH Host、完成两次认证页面访问，并验证 Host 有序重启。Host 重试只恢复 DSH 服务和 Agent 窗口入口；正在运行的 Agent 任务会中断。DSH 会话内容能否在真实招聘操作中按预期恢复，仍需招聘人员在实际使用流程里验证。
 
 第一版的站内搜索和筛选目前由招聘人员在网站页面操作；Agent 只读取当前可见卡片与已经手动打开的简历。GoodHR5 提供了 BOSS 岗位切换输入框的参考配置，但没有可直接复用的跨站候选人检索动作。站内检索自动化应在两站真实页面结构由用户验证后再接入。
 
