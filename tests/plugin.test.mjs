@@ -11,8 +11,11 @@ test('DSH plugin registers criterion-level draft analysis without a message tool
   })
   assert.deepEqual(tools.map(tool => tool.name), [
     'agenthr_get_job_brief',
+    'agenthr_save_job_brief',
     'agenthr_browser_status',
+    'agenthr_open_recommendations',
     'agenthr_list_visible_candidates',
+    'agenthr_open_candidate_preview',
     'agenthr_read_open_resume',
     'agenthr_save_assessment_draft',
   ])

@@ -8,6 +8,7 @@ interface CandidatePreview {
   name: string
   skills: string
   summary: string
+  fingerprint?: string
 }
 
 interface OpenResume { name: string; text: string }
@@ -52,6 +53,9 @@ interface Window {
     setReviewStatus(id: string, status: AssessmentCard['reviewStatus']): Promise<AssessmentCard>
     openDsh(): Promise<void>
     restartDsh(): Promise<void>
+    setWorkspaceTab(tab: 'chat' | 'workspace'): Promise<void>
+    insertDshPrompt(prompt: string): Promise<void>
     onStatus(listener: (status: AgentHrStatus) => void): () => void
+    onJobsChanged(listener: () => void): () => void
   }
 }

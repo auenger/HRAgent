@@ -62,8 +62,11 @@ try {
     'agenthr_browser_status',
     'agenthr_get_job_brief',
     'agenthr_list_visible_candidates',
+    'agenthr_open_candidate_preview',
+    'agenthr_open_recommendations',
     'agenthr_read_open_resume',
     'agenthr_save_assessment_draft',
+    'agenthr_save_job_brief',
   ])
   process.stdout.write(`AgentHR preset exposes exactly ${names.length} recruitment tools to a DSH agent.\n`)
 } finally {

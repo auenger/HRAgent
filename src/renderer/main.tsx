@@ -24,16 +24,28 @@ function App() {
   const [newJob, setNewJob] = useState(true)
   const [assessments, setAssessments] = useState<AssessmentCard[]>([])
   const [assessmentScope, setAssessmentScope] = useState<'active' | 'all'>('active')
+  const [workspaceTab, setWorkspaceTab] = useState<'chat' | 'workspace'>('chat')
+
+  function applyJobList(value: JobList) {
+    setJobList(value)
+    const active = value.jobs.find(job => job.id === value.activeId)
+    if (active) {
+      setJobBrief({ role: active.role, requirements: active.requirements, criteria: active.criteria })
+      setCriteriaInput(active.criteria.join('\n'))
+      setJobBriefSaved(true)
+      setNewJob(false)
+    }
+  }
 
   useEffect(() => {
     void window.agenthr.getStatus().then(setStatus).catch(e => setError(String(e)))
-    void window.agenthr.listJobs().then(value => {
-      setJobList(value)
-      const active = value.jobs.find(job => job.id === value.activeId)
-      if (active) { setJobBrief({ role: active.role, requirements: active.requirements, criteria: active.criteria }); setCriteriaInput(active.criteria.join('\n')); setJobBriefSaved(true); setNewJob(false) }
-    }).catch(e => setError(String(e)))
+    void window.agenthr.listJobs().then(applyJobList).catch(e => setError(String(e)))
     void window.agenthr.listAssessments('active').then(setAssessments).catch(e => setError(String(e)))
-    return window.agenthr.onStatus(setStatus)
+    const stopStatus = window.agenthr.onStatus(setStatus)
+    const stopJobs = window.agenthr.onJobsChanged(() => {
+      void window.agenthr.listJobs().then(applyJobList).catch(e => setError(String(e)))
+    })
+    return () => { stopStatus(); stopJobs() }
   }, [])
 
   useEffect(() => {
@@ -48,6 +60,20 @@ function App() {
     finally { setBusy(false) }
   }
 
+  async function switchWorkspaceTab(tab: 'chat' | 'workspace') {
+    await window.agenthr.setWorkspaceTab(tab)
+    setWorkspaceTab(tab)
+    if (tab === 'workspace') {
+      applyJobList(await window.agenthr.listJobs())
+      setAssessments(await window.agenthr.listAssessments(assessmentScope))
+    }
+  }
+
+  async function fillQuickPrompt(prompt: string) {
+    await switchWorkspaceTab('chat')
+    await window.agenthr.insertDshPrompt(prompt)
+  }
+
   const dshPhase = status.dsh?.phase ?? 'unconfigured'
   const platform = status.browser?.platform ?? 'liepin'
   const dshLabel: Record<NonNullable<AgentHrStatus['dsh']>['phase'], string> = {
@@ -58,16 +84,32 @@ function App() {
     <header className="topbar">
       <div className="brand"><span className="brandmark">A</span><span>AgentHR</span><small>招聘工作台 · 技术预览</small></div>
       <div className="top-actions">
+        {error && <span className="top-error" title={error}>{error}</span>}
         <span className={`runtime ${dshPhase}`}>DSH {dshLabel[dshPhase]}</span>
         {(dshPhase === 'failed' || dshPhase === 'stopped' || dshPhase === 'unconfigured')
           && <button className="dsh-button secondary" disabled={busy} onClick={() => void run(() => window.agenthr.restartDsh())}>重试 Agent</button>}
-        <button className="dsh-button" disabled={dshPhase !== 'ready'} onClick={() => void run(() => window.agenthr.openDsh())}>打开 Agent ↗</button>
+        <button className="dsh-button" disabled={dshPhase !== 'ready'} onClick={() => void run(() => window.agenthr.openDsh())}>弹出对话 ↗</button>
       </div>
     </header>
-    <aside className="panel">
+    <aside className={`panel ${workspaceTab === 'chat' ? 'chat-mode' : ''}`}>
+      <div className="workspace-tabs">
+        <button className={workspaceTab === 'chat' ? 'selected' : ''} disabled={busy} onClick={() => void run(() => switchWorkspaceTab('chat'))}>AI 对话</button>
+        <button className={workspaceTab === 'workspace' ? 'selected' : ''} disabled={busy} onClick={() => void run(() => switchWorkspaceTab('workspace'))}>岗位与记录</button>
+      </div>
+      {workspaceTab === 'chat' && <div className="quick-actions">
+        <button disabled={busy || dshPhase !== 'ready'} onClick={() => void run(() => fillQuickPrompt('请先识别当前招聘页面，读取可见候选人卡片，并告诉我下一步适合查看谁；不要发送消息。'))}>识别当前页</button>
+        <button disabled={busy || dshPhase !== 'ready'} onClick={() => void run(() => fillQuickPrompt('请根据我接下来描述的招聘需求，整理岗位名称、完整要求和逐项技能条件，并保存为当前岗位。岗位需求：'))}>描述岗位</button>
+        <button disabled={busy || dshPhase !== 'ready'} onClick={() => void run(() => fillQuickPrompt('请读取当前岗位和已打开的简历，逐项判断技能证据，引用原文，生成需要确认的技能问题草稿，并保存分析卡片。不要询问薪资或求职意向，不要发送消息。'))}>分析简历</button>
+      </div>}
+      {workspaceTab === 'chat' && <div className="chat-placeholder">
+        <span className="eyebrow">AGENT / CONVERSATION</span>
+        <h2>{dshPhase === 'ready' ? '正在打开 Agent 对话…' : '等待 DSH 对话就绪'}</h2>
+        <p>你可以直接描述岗位或让 Agent 查看当前页面。右侧对话框就绪后，常用按钮会把提示词填入输入框，仍可自行修改。</p>
+      </div>}
+      <div className="workspace-content">
       <div className="eyebrow">工作空间 / 01</div>
       <h1>从候选人线索<br />走向有依据的推荐</h1>
-      <p className="intro">配置岗位后，在右侧手动打开候选人简历。Agent 可读取当前资料并生成有依据的分析草稿；招聘网站兼容性仍需你在实际页面验证。</p>
+      <p className="intro">可在 AI 对话中描述岗位、识别左侧招聘页面并打开候选人详情。Agent 可读取当前资料并生成有依据的分析草稿；招聘网站兼容性仍需你在实际页面验证。</p>
 
       <section className="section">
         <div className="section-head"><h2>当前岗位条件</h2><span className="badge">本机保存</span></div>
@@ -131,7 +173,7 @@ function App() {
           {candidate.summary && <p>{candidate.summary}</p>}
         </article>)}</div>}
         <button className="read-button secondary" disabled={busy} onClick={() => void run(async () => { setResume(null); setResume(await window.agenthr.readOpenResume()) })}>读取已打开的简历详情</button>
-        <p className="hint">请先在右侧手动打开一份简历；读取动作不会点击候选人。这里显示读取时的快照，切换候选人后请重新读取。</p>
+        <p className="hint">请先在左侧打开一份简历，或让 Agent 从当前卡片进入详情。这里显示读取时的快照，切换候选人后请重新读取。</p>
         {resume && <div className="resume-detail"><strong>{resume.name || '当前简历'}</strong><pre>{resume.text}</pre></div>}
       </section>
 
@@ -171,6 +213,7 @@ function App() {
       <div className="footer-note">浏览器会话独立保存在本机。第一版不自动发送消息，也不追问薪资或求职意向。</div>
       {status.dsh?.detail && <p className="runtime-detail">DSH：{status.dsh.detail}</p>}
       {error && <p className="alert">{error}</p>}
+      </div>
     </aside>
     <main className="browser-label"><span>招聘网站浏览区</span><span>内嵌 Chromium · 独立会话</span></main>
   </div>

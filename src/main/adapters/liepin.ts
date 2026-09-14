@@ -4,6 +4,7 @@ export interface CandidatePreview {
   name: string
   skills: string
   summary: string
+  fingerprint?: string
 }
 
 /** Detail that the recruiter opened manually; no card index or inferred identity. */
@@ -20,7 +21,14 @@ export interface OpenResume {
 export function extractLiepinPreviews(doc: Document): CandidatePreview[] {
   const cards = Array.from(doc.querySelectorAll<HTMLElement>(
     "[data-tlg-elem-id='b_pc_home_hp_res_listcard'], [data-tlg-elem-id='b_pc_home_new_res_listcard']",
-  )).slice(0, 30)
+  )).filter(card => {
+    for (let node: HTMLElement | null = card; node; node = node.parentElement) {
+      const style = doc.defaultView?.getComputedStyle?.(node)
+      if (node.hasAttribute('hidden') || node.getAttribute('aria-hidden') === 'true'
+        || style?.display === 'none' || style?.visibility === 'hidden') return false
+    }
+    return true
+  }).slice(0, 30)
   const read = (card: HTMLElement, selector: string, limit: number): string => {
     return (card.querySelector(selector)?.textContent ?? '').replace(/\s+/gu, ' ').trim().slice(0, limit)
   }

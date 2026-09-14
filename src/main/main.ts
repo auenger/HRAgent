@@ -1,6 +1,6 @@
-import { app, BrowserWindow, ipcMain, type Rectangle } from 'electron'
+import { app, BrowserWindow, WebContentsView, ipcMain, type Rectangle } from 'electron'
 import { fileURLToPath } from 'node:url'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { RecruitmentBrowser, type RecruitmentPage, type BrowserStatus, type Platform } from './recruitment-browser.js'
 import { DshHost, type DshStatus } from './dsh-host.js'
@@ -10,16 +10,21 @@ import { AssessmentStore, type ReviewStatus } from './assessments.js'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const offlineSmoke = process.env.AGENTHR_OFFLINE_SMOKE === '1'
+const offlineChatSmoke = offlineSmoke && process.env.AGENTHR_OFFLINE_CHAT_SMOKE === '1'
 if (offlineSmoke) {
   const home = process.env.AGENTHR_OFFLINE_HOME
   if (!home || !isAbsolute(home)) throw new Error('Offline smoke requires an absolute isolated user-data path')
   mkdirSync(home, { recursive: true, mode: 0o700 })
   app.setPath('userData', home)
 }
-const PANEL_WIDTH = 408
+const PANEL_WIDTH = 560
 const HEADER_HEIGHT = 76
+const CHAT_HEADER_HEIGHT = 112
 let window: BrowserWindow | undefined
 let browser: RecruitmentBrowser | undefined
+let dshView: WebContentsView | undefined
+let dshViewUrl: string | undefined
+let workspaceTab: 'chat' | 'workspace' = 'chat'
 let dsh: DshHost | undefined
 let bridge: AgentHrBridge | undefined
 let dshWindow: BrowserWindow | undefined
@@ -29,7 +34,42 @@ let quitting = false
 
 function browserBounds(): Rectangle {
   const [width, height] = window?.getContentSize() ?? [1200, 800]
-  return { x: PANEL_WIDTH, y: HEADER_HEIGHT, width: Math.max(0, width - PANEL_WIDTH), height: Math.max(0, height - HEADER_HEIGHT) }
+  return { x: 0, y: HEADER_HEIGHT, width: Math.max(0, width - PANEL_WIDTH), height: Math.max(0, height - HEADER_HEIGHT) }
+}
+
+function dshBounds(): Rectangle {
+  const [width, height] = window?.getContentSize() ?? [1200, 800]
+  return workspaceTab === 'chat'
+    ? { x: Math.max(0, width - PANEL_WIDTH), y: HEADER_HEIGHT + CHAT_HEADER_HEIGHT, width: PANEL_WIDTH, height: Math.max(0, height - HEADER_HEIGHT - CHAT_HEADER_HEIGHT) }
+    : { x: Math.max(0, width - PANEL_WIDTH), y: HEADER_HEIGHT + CHAT_HEADER_HEIGHT, width: 0, height: 0 }
+}
+
+function closeDshView(): void {
+  if (!dshView) return
+  if (window && !window.isDestroyed()) window.contentView.removeChildView(dshView)
+  dshView.webContents.close()
+  dshView = undefined
+  dshViewUrl = undefined
+}
+
+async function syncDshView(status: DshStatus): Promise<void> {
+  if (!window || window.isDestroyed() || (offlineSmoke && !offlineChatSmoke)) return
+  if (status.phase !== 'ready' || !status.url) { closeDshView(); return }
+  if (dshView && dshViewUrl === status.url) { dshView.setBounds(dshBounds()); return }
+  closeDshView()
+  const allowedOrigin = new URL(status.url).origin
+  const view = new WebContentsView({ webPreferences: {
+    partition: 'persist:agenthr-dsh', nodeIntegration: false, contextIsolation: true, sandbox: true,
+  } })
+  view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  view.webContents.on('will-navigate', (event, url) => {
+    if (new URL(url).origin !== allowedOrigin) event.preventDefault()
+  })
+  window.contentView.addChildView(view)
+  dshView = view
+  dshViewUrl = status.url
+  view.setBounds(dshBounds())
+  await view.webContents.loadURL(status.url)
 }
 
 function emitStatus(): void {
@@ -61,7 +101,7 @@ async function selectPlatform(platform: Platform): Promise<void> {
 
 async function createWindow(): Promise<void> {
   window = new BrowserWindow({
-    width: 1440, height: 900, minWidth: 900, minHeight: 600,
+    width: 1540, height: 920, minWidth: 1100, minHeight: 650,
     title: 'AgentHR',
     backgroundColor: '#f4f2ed',
     webPreferences: {
@@ -74,8 +114,8 @@ async function createWindow(): Promise<void> {
   window.setMenuBarVisibility(false)
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', event => event.preventDefault())
-  window.on('resize', () => browser?.setBounds(browserBounds()))
-  window.on('closed', () => { browser?.dispose(); browser = undefined; window = undefined })
+  window.on('resize', () => { browser?.setBounds(browserBounds()); dshView?.setBounds(dshBounds()) })
+  window.on('closed', () => { browser?.dispose(); browser = undefined; closeDshView(); window = undefined })
   await window.loadFile(join(root, '../renderer/index.html'))
   emitStatus()
   if (!offlineSmoke) void selectPlatform('liepin').catch(error => console.error('[recruitment browser]', error))
@@ -89,12 +129,13 @@ async function verifyOfflineWindow(): Promise<void> {
     const cards = await window.agenthr.listAssessments('all')
     return { title: document.title, text: document.body.innerText,
       bridge: typeof window.agenthr.openDsh, restartBridge: typeof window.agenthr.restartDsh,
+      tabBridge: typeof window.agenthr.setWorkspaceTab, promptBridge: typeof window.agenthr.insertDshPrompt,
       browser: status.browser ?? null,
       jobCount: jobs.jobs.length, cardCount: cards.length }
-  })()`, true) as { title: string; text: string; bridge: string; restartBridge: string; browser: unknown; jobCount: number; cardCount: number }
-  if (result.bridge !== 'function' || result.restartBridge !== 'function'
+  })()`, true) as { title: string; text: string; bridge: string; restartBridge: string; tabBridge: string; promptBridge: string; browser: unknown; jobCount: number; cardCount: number }
+  if (result.bridge !== 'function' || result.restartBridge !== 'function' || result.tabBridge !== 'function' || result.promptBridge !== 'function'
     || result.browser !== null || result.jobCount !== 0 || result.cardCount !== 0
-    || !result.text.includes('当前岗位条件') || !result.text.includes('分析队列')) {
+    || !result.text.includes('AI 对话') || !result.text.includes('岗位与记录')) {
     throw new Error('Offline renderer or preload bridge did not initialize as expected')
   }
   console.log('AGENTHR_OFFLINE_SMOKE_OK')
@@ -117,9 +158,30 @@ app.whenReady().then(async () => {
       if (browser !== sourceBrowser) throw new Error('招聘平台已切换，请重新读取简历')
       return assessmentStore.save(value, resume, brief, sourceBrowser.platform)
     },
+    async value => {
+      if (typeof value !== 'object' || value === null) throw new Error('岗位配置格式无效')
+      const input = value as Record<string, unknown>
+      const brief = { role: input.role, requirements: input.requirements, criteria: input.criteria }
+      const record = input.mode === 'create' ? jobBriefStore.create(brief)
+        : input.mode === 'update_active' ? jobBriefStore.save(brief)
+          : (() => { throw new Error('岗位保存模式无效') })()
+      window?.webContents.send('agenthr:jobs-changed')
+      return record
+    },
+    async platform => {
+      if (offlineSmoke) throw new Error('离线模式不能打开招聘网站')
+      await selectPlatform(platform)
+      if (!browser || browser.platform !== platform) throw new Error('招聘平台不可用')
+      await browser.open('recommend')
+      return { platform, page: 'recommend' }
+    },
+    fingerprint => browser?.openCandidatePreview(fingerprint) ?? Promise.reject(new Error('招聘页面不可用')),
   )
   const address = await bridge.start()
-  dsh = new DshHost(app.getPath('userData'), address, (_status: DshStatus) => emitStatus())
+  dsh = new DshHost(app.getPath('userData'), address, (status: DshStatus) => {
+    emitStatus()
+    void syncDshView(status).catch(error => console.error('[DSH view]', error))
+  })
   ipcMain.handle('agenthr:status', () => ({ browser: browser?.getStatus(), dsh: dsh?.getStatus() }))
   ipcMain.handle('agenthr:select-platform', async (_event, platform: unknown) => {
     assertPlatform(platform)
@@ -155,13 +217,13 @@ app.whenReady().then(async () => {
     if (dshWindow && !dshWindow.isDestroyed()) { dshWindow.focus(); return }
     dshWindow = new BrowserWindow({
       width: 1100, height: 800, title: 'DSH · AgentHR',
-      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+      webPreferences: { partition: 'persist:agenthr-dsh', nodeIntegration: false, contextIsolation: true, sandbox: true },
     })
     dshWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     dshWindow.webContents.on('will-navigate', (event, url) => {
       if (new URL(url).origin !== new URL(status.url!).origin) event.preventDefault()
     })
-    await dshWindow.loadURL(status.url)
+    await dshWindow.loadURL(dshView ? new URL('/', status.url).href : status.url)
   })
   ipcMain.handle('agenthr:restart-dsh', async () => {
     if (offlineSmoke) throw new Error('离线验证模式不启动 DSH')
@@ -173,9 +235,52 @@ app.whenReady().then(async () => {
     dshWindow = undefined
     await dsh.restart()
   })
+  ipcMain.handle('agenthr:set-workspace-tab', (_event, tab: unknown) => {
+    if (tab !== 'chat' && tab !== 'workspace') throw new Error('未知工作台页面')
+    workspaceTab = tab
+    dshView?.setBounds(dshBounds())
+  })
+  ipcMain.handle('agenthr:insert-dsh-prompt', async (_event, prompt: unknown) => {
+    if (typeof prompt !== 'string' || prompt.length < 1 || prompt.length > 1000) throw new Error('提示词长度无效')
+    if (!dshView || dsh?.getStatus().phase !== 'ready') throw new Error('Agent 对话尚未就绪')
+    workspaceTab = 'chat'
+    dshView.setBounds(dshBounds())
+    const focused: unknown = await dshView.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('[data-composer-input][contenteditable="true"]')
+      if (!input) return false
+      input.focus()
+      return true
+    })()`)
+    if (focused !== true) throw new Error('请先在 Agent 对话中创建会话')
+    dshView.webContents.focus()
+    await dshView.webContents.insertText(prompt)
+  })
   await createWindow()
   if (offlineSmoke) {
-    try { await verifyOfflineWindow(); app.quit() }
+    try {
+      await verifyOfflineWindow()
+      if (offlineChatSmoke) {
+        await dsh.start()
+        const deadline = Date.now() + 45_000
+        while (Date.now() < deadline) {
+          if (dsh.getStatus().phase === 'failed') throw new Error(dsh.getStatus().detail || 'DSH failed')
+          if (dshView && dshView.webContents.getURL().startsWith('http://127.0.0.1:') && !dshView.webContents.isLoading()) {
+            const ui: unknown = await dshView.webContents.executeJavaScript('document.body.innerText')
+            if (typeof ui === 'string' && ui.trim().length > 20) {
+              const screenshot = await window!.capturePage()
+              writeFileSync(join(app.getPath('userData'), 'agenthr-chat-smoke.png'), screenshot.toPNG())
+              const chatScreenshot = await dshView.webContents.capturePage()
+              writeFileSync(join(app.getPath('userData'), 'agenthr-dsh-view-smoke.png'), chatScreenshot.toPNG())
+              console.log('AGENTHR_OFFLINE_CHAT_SMOKE_OK')
+              break
+            }
+          }
+          await new Promise(resolveWait => setTimeout(resolveWait, 250))
+        }
+        if (Date.now() >= deadline) throw new Error('Embedded DSH chat did not render')
+      }
+      app.quit()
+    }
     catch (error) { console.error('[offline smoke]', error); app.exit(1) }
   } else {
     void dsh.start().catch(error => console.error('[dsh]', error))

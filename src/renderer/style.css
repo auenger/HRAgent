@@ -28,6 +28,7 @@ button:disabled { cursor: not-allowed; opacity: .46; }
 .brandmark { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--red); color: var(--white); font-size: 17px; font-family: Arial, sans-serif; }
 .brand small { font-size: 12px; color: #b9bbc0; margin-left: 8px; font-weight: 500; letter-spacing: 0; }
 .top-actions { display: flex; align-items: center; gap: 15px; }
+.top-error { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ff9b9e; font-size: 11px; }
 .runtime { font-size: 12px; font-weight: 700; color: #b8b9bd; }
 .runtime.ready { color: #77d59c; }
 .runtime.failed { color: #ff9b9e; }
@@ -35,7 +36,19 @@ button:disabled { cursor: not-allowed; opacity: .46; }
 .dsh-button:hover:not(:disabled) { background: var(--red-dark); border-color: var(--red-dark); }
 .dsh-button.secondary { background: transparent; border-color: #62656b; }
 .dsh-button.secondary:hover:not(:disabled) { background: #2e3033; border-color: #aeb0b4; }
-.panel { position: absolute; top: 76px; bottom: 0; left: 0; width: 408px; overflow: auto; padding: 30px 25px 25px; background: var(--white); border-right: 1px solid var(--gray-200); }
+.panel { position: absolute; top: 76px; bottom: 0; right: 0; width: 560px; overflow: auto; padding: 0 24px 30px; background: var(--white); border-left: 1px solid var(--gray-200); }
+.panel.chat-mode { overflow: hidden; padding-bottom: 0; }
+.panel.chat-mode .workspace-content { display: none; }
+.workspace-content { padding-top: 24px; }
+.workspace-tabs { display: flex; height: 54px; align-items: stretch; gap: 24px; border-bottom: 1px solid var(--gray-200); }
+.workspace-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--gray-500); font-size: 13px; font-weight: 700; padding: 0 2px; }
+.workspace-tabs button.selected { color: var(--black); border-bottom-color: var(--red); }
+.quick-actions { height: 58px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--gray-200); }
+.quick-actions button { border: 1px solid var(--gray-300); background: var(--white); color: var(--gray-700); border-radius: 20px; padding: 7px 11px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.quick-actions button:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+.chat-placeholder { padding: 35px 12px; color: var(--gray-500); }
+.chat-placeholder h2 { font-size: 19px; margin: 14px 0; }
+.chat-placeholder p { font-size: 12px; line-height: 1.7; }
 .eyebrow { font-size: 11px; letter-spacing: 2px; color: var(--red); font-weight: 700; }
 h1 { font-size: 28px; line-height: 1.36; letter-spacing: -.8px; margin: 17px 0 12px; color: var(--black); }
 .intro { font-size: 13px; line-height: 1.8; color: var(--gray-700); margin: 0 0 29px; }
@@ -100,4 +113,4 @@ h2 { font-size: 14px; margin: 0; color: var(--black); }
 .footer-note { color: var(--gray-500); font-size: 11px; line-height: 1.7; margin-top: 12px; }
 .runtime-detail { font-size: 11px; color: var(--gray-500); overflow-wrap: anywhere; }
 .alert { padding: 10px 12px; background: var(--red-soft); border-radius: 6px; color: var(--red-dark); font-size: 11px; overflow-wrap: anywhere; line-height: 1.55; }
-.browser-label { position: absolute; top: 76px; left: 408px; right: 0; height: 0; overflow: hidden; }
+.browser-label { position: absolute; top: 76px; left: 0; right: 560px; height: 0; overflow: hidden; }

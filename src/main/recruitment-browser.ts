@@ -1,8 +1,10 @@
 import { WebContentsView, type BrowserWindow, type Rectangle, type WebFrameMain } from 'electron'
+import { createHash } from 'node:crypto'
 import { PLATFORMS, isRecruitmentUrl, type Platform, type RecruitmentPage } from './platforms.js'
 import { extractLiepinPreviews, extractOpenLiepinResume, parseCandidatePreviews, parseOpenResume, type CandidatePreview, type OpenResume } from './adapters/liepin.js'
 import { extractBossPreviews, extractOpenBossResume, hasSingleVisibleBossFrame } from './adapters/boss.js'
 import { resumeDigest } from './assessments.js'
+import { animateOpenCandidate } from './adapters/candidate-action.js'
 
 export type { Platform, RecruitmentPage } from './platforms.js'
 
@@ -104,7 +106,25 @@ export class RecruitmentBrowser {
     const result: unknown = await frame.executeJavaScript(`(${extract.toString()})(document)`)
     this.checkReadPage(url)
     if (frame.isDestroyed() || frame.url !== frameUrl) throw new Error('候选人列表框架已变化，请重试')
-    return parseCandidatePreviews(result)
+    return parseCandidatePreviews(result).map(candidate => ({
+      ...candidate,
+      fingerprint: createHash('sha256').update(JSON.stringify([this.platform, url, candidate])).digest('hex'),
+    }))
+  }
+
+  async openCandidatePreview(fingerprint: string): Promise<{ opened: boolean; name: string }> {
+    if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('候选人标识无效')
+    const candidates = await this.listVisibleCandidates()
+    const matches = candidates.filter(candidate => candidate.fingerprint === fingerprint && candidate.name)
+    if (matches.length !== 1) throw new Error('候选人卡片已变化，请重新读取当前列表')
+    const contents = this.view.webContents
+    const frame = this.platform === 'boss' ? await this.getBossRecommendFrame() : contents.mainFrame
+    const input = { ...matches[0], platform: this.platform }
+    const result: unknown = await frame.executeJavaScript(`(${animateOpenCandidate.toString()})(document, ${JSON.stringify(input)})`)
+    if (!result || typeof result !== 'object' || (result as { opened?: boolean }).opened !== true) {
+      throw new Error('候选人详情入口已变化，请重新读取当前列表')
+    }
+    return result as { opened: boolean; name: string }
   }
 
   async readOpenResume(): Promise<OpenResume & { sourceDigest: string }> {

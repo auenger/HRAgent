@@ -17,10 +17,17 @@ const api = {
   setReviewStatus: (id: string, status: 'draft' | 'needs_clarification' | 'reviewed') => ipcRenderer.invoke('agenthr:set-review-status', id, status),
   openDsh: () => ipcRenderer.invoke('agenthr:open-dsh'),
   restartDsh: () => ipcRenderer.invoke('agenthr:restart-dsh'),
+  setWorkspaceTab: (tab: 'chat' | 'workspace') => ipcRenderer.invoke('agenthr:set-workspace-tab', tab),
+  insertDshPrompt: (prompt: string) => ipcRenderer.invoke('agenthr:insert-dsh-prompt', prompt),
   onStatus: (listener: (status: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: unknown) => listener(status)
     ipcRenderer.on('agenthr:status-changed', handler)
     return () => ipcRenderer.removeListener('agenthr:status-changed', handler)
+  },
+  onJobsChanged: (listener: () => void) => {
+    const handler = () => listener()
+    ipcRenderer.on('agenthr:jobs-changed', handler)
+    return () => ipcRenderer.removeListener('agenthr:jobs-changed', handler)
   },
 }
 

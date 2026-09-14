@@ -12,12 +12,17 @@ test('AgentHR tools read synthetic role and resume, then save an evidence-backed
   const store = new AssessmentStore(home)
   const brief = { role: '动物造模研发', requirements: '脑科学研发背景', criteria: ['熟悉 tMCAO 动物造模'] }
   const resume = { name: '模拟候选人', text: '从事脑科学研究，熟悉动物实验；简历未说明具体造模方法。' }
+  const browserActions = []
+  const candidateFingerprint = 'a'.repeat(64)
   const bridge = new AgentHrBridge(
     () => ({ platform: 'liepin', url: 'https://lpt.liepin.com/recommend', title: '模拟页面', loading: false }),
-    async () => [{ cardIndex: 0, name: resume.name, skills: '动物实验', summary: '脑科学研发' }],
+    async () => [{ cardIndex: 0, name: resume.name, skills: '动物实验', summary: '脑科学研发', fingerprint: candidateFingerprint }],
     async () => resume,
     () => brief,
     async value => store.save(value, resume, brief, 'liepin'),
+    async value => { browserActions.push(['job', value]); return { ...value, id: 'synthetic' } },
+    async platform => { browserActions.push(['navigate', platform]); return { platform, page: 'recommend' } },
+    async fingerprint => { browserActions.push(['candidate', fingerprint]); return { opened: true, name: resume.name } },
   )
   const address = await bridge.start()
   const oldUrl = process.env.AGENTHR_BRIDGE_URL
@@ -34,6 +39,8 @@ test('AgentHR tools read synthetic role and resume, then save an evidence-backed
     const call = async (name, args = {}) => JSON.parse(await registered.get(name).execute(args, { signal }))
     const job = (await call('agenthr_get_job_brief')).jobBrief
     const current = (await call('agenthr_read_open_resume')).resume
+    assert.equal((await call('agenthr_browser_status')).page, 'recommend')
+    assert.equal((await call('agenthr_list_visible_candidates')).candidates[0].fingerprint, candidateFingerprint)
     assert.equal(job.role, brief.role)
     assert.equal(current.name, resume.name)
     assert.match(current.sourceDigest, /^[0-9a-f]{64}$/u)
@@ -49,6 +56,11 @@ test('AgentHR tools read synthetic role and resume, then save an evidence-backed
     const saved = await call('agenthr_save_assessment_draft', draft)
     assert.equal(saved.card.reviewStatus, 'draft')
     assert.deepEqual(store.list()[0].findings, draft.findings)
+    const created = await call('agenthr_save_job_brief', { mode: 'create', ...brief })
+    assert.equal(created.jobBrief.id, 'synthetic')
+    assert.equal((await call('agenthr_open_recommendations', { platform: 'liepin' })).result.page, 'recommend')
+    assert.equal((await call('agenthr_open_candidate_preview', { fingerprint: candidateFingerprint })).result.opened, true)
+    assert.deepEqual(browserActions.map(action => action[0]), ['job', 'navigate', 'candidate'])
     assert.equal([...registered.keys()].some(name => /send|message/iu.test(name)), false)
   } finally {
     if (oldUrl === undefined) delete process.env.AGENTHR_BRIDGE_URL

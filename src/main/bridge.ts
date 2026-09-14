@@ -28,6 +28,9 @@ export class AgentHrBridge {
     private readonly readResume: () => Promise<OpenResume>,
     private readonly getJobBrief: () => JobBrief | null,
     private readonly saveAssessment: (value: unknown) => Promise<AssessmentCard>,
+    private readonly saveJobBrief?: (value: unknown) => Promise<unknown>,
+    private readonly openRecommendations?: (platform: 'boss' | 'liepin') => Promise<unknown>,
+    private readonly openCandidate?: (fingerprint: string) => Promise<unknown>,
   ) {}
 
   async start(): Promise<BridgeAddress> {
@@ -37,6 +40,58 @@ export class AgentHrBridge {
       const actual = Buffer.from(provided)
       if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
         response.writeHead(401).end()
+        return
+      }
+      if (request.method === 'POST' && (request.url === '/v1/browser/recommend' || request.url === '/v1/candidates/open')) {
+        let body = ''
+        let tooLarge = false
+        request.setEncoding('utf8')
+        request.on('data', (chunk: string) => {
+          if (body.length + chunk.length > 2048) { tooLarge = true; return }
+          body += chunk
+        })
+        request.on('end', () => {
+          if (tooLarge) { response.writeHead(413).end(); return }
+          void Promise.resolve().then(() => {
+            const input = JSON.parse(body) as Record<string, unknown>
+            if (request.url === '/v1/browser/recommend') {
+              if (!this.openRecommendations || (input.platform !== 'boss' && input.platform !== 'liepin')) throw new Error('Invalid platform')
+              return this.openRecommendations(input.platform)
+            }
+            if (!this.openCandidate || typeof input.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(input.fingerprint)) throw new Error('Invalid candidate')
+            return this.openCandidate(input.fingerprint)
+          }).then(result => {
+            response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            response.end(JSON.stringify({ result }))
+          }).catch(() => {
+            response.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            response.end(JSON.stringify({ error: '页面或候选人卡片已变化，请重新识别当前页面' }))
+          })
+        })
+        return
+      }
+      if (request.method === 'POST' && request.url === '/v1/job-brief') {
+        let body = ''
+        let tooLarge = false
+        request.setEncoding('utf8')
+        request.on('data', (chunk: string) => {
+          if (tooLarge) return
+          if (body.length + chunk.length > 12_000) { tooLarge = true; return }
+          body += chunk
+        })
+        request.on('end', () => {
+          if (tooLarge) { response.writeHead(413).end(); return }
+          void Promise.resolve().then(() => {
+            if (!this.saveJobBrief) throw new Error('Job brief write is unavailable')
+            return this.saveJobBrief(JSON.parse(body) as unknown)
+          }).then(jobBrief => {
+            response.writeHead(201, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            response.end(JSON.stringify({ jobBrief }))
+          }).catch(() => {
+            response.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            response.end(JSON.stringify({ error: '岗位未保存；请确认名称、要求和逐项技能条件' }))
+          })
+        })
         return
       }
       if (request.method === 'POST' && request.url === '/v1/assessments') {
