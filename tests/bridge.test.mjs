@@ -19,7 +19,7 @@ test('DSH bridge is loopback-only and rejects unauthenticated requests', async (
     assert.equal(denied.status, 401)
     const accepted = await fetch(`${address.url}/v1/browser/status`, { headers: { Authorization: `Bearer ${address.token}` } })
     assert.equal(accepted.status, 200)
-    assert.deepEqual(await accepted.json(), { browser: { platform: 'liepin', page: 'login', loading: false } })
+    assert.deepEqual(await accepted.json(), { browser: { platform: 'liepin', page: 'login', loading: false, title: '登录', path: '/login' } })
     const unknown = await fetch(`${address.url}/v1/browser/unknown`, { headers: { Authorization: `Bearer ${address.token}` } })
     assert.equal(unknown.status, 404)
     const candidates = await fetch(`${address.url}/v1/candidates/visible`, { headers: { Authorization: `Bearer ${address.token}` } })

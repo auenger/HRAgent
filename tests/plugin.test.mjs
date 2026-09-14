@@ -13,6 +13,8 @@ test('DSH plugin registers criterion-level draft analysis without a message tool
     'agenthr_get_job_brief',
     'agenthr_save_job_brief',
     'agenthr_browser_status',
+    'agenthr_browser_snapshot',
+    'agenthr_browser_action',
     'agenthr_open_recommendations',
     'agenthr_list_visible_candidates',
     'agenthr_open_candidate_preview',

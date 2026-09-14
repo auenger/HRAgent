@@ -31,6 +31,8 @@ export class AgentHrBridge {
     private readonly saveJobBrief?: (value: unknown) => Promise<unknown>,
     private readonly openRecommendations?: (platform: 'boss' | 'liepin') => Promise<unknown>,
     private readonly openCandidate?: (fingerprint: string) => Promise<unknown>,
+    private readonly snapshotPage?: () => Promise<unknown>,
+    private readonly actOnPage?: (value: unknown) => Promise<unknown>,
   ) {}
 
   async start(): Promise<BridgeAddress> {
@@ -42,18 +44,22 @@ export class AgentHrBridge {
         response.writeHead(401).end()
         return
       }
-      if (request.method === 'POST' && (request.url === '/v1/browser/recommend' || request.url === '/v1/candidates/open')) {
+      if (request.method === 'POST' && (request.url === '/v1/browser/recommend' || request.url === '/v1/candidates/open' || request.url === '/v1/browser/action')) {
         let body = ''
         let tooLarge = false
         request.setEncoding('utf8')
         request.on('data', (chunk: string) => {
-          if (body.length + chunk.length > 2048) { tooLarge = true; return }
+          if (body.length + chunk.length > 4096) { tooLarge = true; return }
           body += chunk
         })
         request.on('end', () => {
           if (tooLarge) { response.writeHead(413).end(); return }
           void Promise.resolve().then(() => {
             const input = JSON.parse(body) as Record<string, unknown>
+            if (request.url === '/v1/browser/action') {
+              if (!this.actOnPage) throw new Error('Browser action unavailable')
+              return this.actOnPage(input)
+            }
             if (request.url === '/v1/browser/recommend') {
               if (!this.openRecommendations || (input.platform !== 'boss' && input.platform !== 'liepin')) throw new Error('Invalid platform')
               return this.openRecommendations(input.platform)
@@ -119,6 +125,19 @@ export class AgentHrBridge {
         response.writeHead(404).end()
         return
       }
+      if (request.url === '/v1/browser/snapshot') {
+        void Promise.resolve().then(() => {
+          if (!this.snapshotPage) throw new Error('Browser observation unavailable')
+          return this.snapshotPage()
+        }).then(snapshot => {
+          response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          response.end(JSON.stringify({ snapshot }))
+        }).catch(() => {
+          response.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          response.end(JSON.stringify({ error: '当前页面无法读取，请等待加载完成后重试' }))
+        })
+        return
+      }
       if (request.url === '/v1/candidates/visible') {
         void this.listCandidates().then(candidates => {
           response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
@@ -160,6 +179,8 @@ export class AgentHrBridge {
         platform: browser.platform,
         page: pageKind(browser),
         loading: browser.loading,
+        title: browser.title.slice(0, 200),
+        path: (() => { try { return new URL(browser.url).pathname } catch { return '' } })(),
       } : null }))
     })
     this.server = server

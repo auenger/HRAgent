@@ -176,6 +176,8 @@ app.whenReady().then(async () => {
       return { platform, page: 'recommend' }
     },
     fingerprint => browser?.openCandidatePreview(fingerprint) ?? Promise.reject(new Error('招聘页面不可用')),
+    () => browser?.snapshotPage() ?? Promise.reject(new Error('招聘页面不可用')),
+    value => browser?.actOnPage(value) ?? Promise.reject(new Error('招聘页面不可用')),
   )
   const address = await bridge.start()
   dsh = new DshHost(app.getPath('userData'), address, (status: DshStatus) => {

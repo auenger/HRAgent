@@ -22,7 +22,8 @@
     "smoke:host:restart": "pnpm build:main && pnpm build:plugin && node scripts/smoke-dsh-host-restart.mjs",
     "smoke:host:package": "node scripts/smoke-dsh-host.mjs --packaged",
     "smoke:agent-tools": "pnpm build:main && pnpm build:plugin && node scripts/smoke-dsh-agent-tools.mjs",
-    "smoke:gui:package": "node scripts/smoke-electron-gui.mjs"
+    "smoke:gui:package": "node scripts/smoke-electron-gui.mjs",
+    "smoke:browser-use": "pnpm build:main && electron scripts/smoke-electron-browser-use.mjs"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.2",

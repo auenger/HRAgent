@@ -97,7 +97,7 @@ function App() {
         <button className={workspaceTab === 'workspace' ? 'selected' : ''} disabled={busy} onClick={() => void run(() => switchWorkspaceTab('workspace'))}>岗位与记录</button>
       </div>
       {workspaceTab === 'chat' && <div className="quick-actions">
-        <button disabled={busy || dshPhase !== 'ready'} onClick={() => void run(() => fillQuickPrompt('请先识别当前招聘页面，读取可见候选人卡片，并告诉我下一步适合查看谁；不要发送消息。'))}>识别当前页</button>
+        <button disabled={busy || dshPhase !== 'ready'} onClick={() => void run(() => fillQuickPrompt('请识别当前招聘页面并读取页面快照。如果是搜索结果页，直接概括当前可见内容；不用先配置岗位，也不要发送消息。'))}>识别当前页</button>
         <button disabled={busy || dshPhase !== 'ready'} onClick={() => void run(() => fillQuickPrompt('请根据我接下来描述的招聘需求，整理岗位名称、完整要求和逐项技能条件，并保存为当前岗位。岗位需求：'))}>描述岗位</button>
         <button disabled={busy || dshPhase !== 'ready'} onClick={() => void run(() => fillQuickPrompt('请读取当前岗位和已打开的简历，逐项判断技能证据，引用原文，生成需要确认的技能问题草稿，并保存分析卡片。不要询问薪资或求职意向，不要发送消息。'))}>分析简历</button>
       </div>}

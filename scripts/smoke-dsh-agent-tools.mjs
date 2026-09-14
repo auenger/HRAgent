@@ -59,6 +59,8 @@ try {
   })
   const names = ctx.tools.schemas(handle.agent).map(tool => tool.name).sort()
   assert.deepEqual(names, [
+    'agenthr_browser_action',
+    'agenthr_browser_snapshot',
     'agenthr_browser_status',
     'agenthr_get_job_brief',
     'agenthr_list_visible_candidates',

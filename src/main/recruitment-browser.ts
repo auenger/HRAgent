@@ -1,10 +1,11 @@
 import { WebContentsView, type BrowserWindow, type Rectangle, type WebFrameMain } from 'electron'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { PLATFORMS, isRecruitmentUrl, type Platform, type RecruitmentPage } from './platforms.js'
 import { extractLiepinPreviews, extractOpenLiepinResume, parseCandidatePreviews, parseOpenResume, type CandidatePreview, type OpenResume } from './adapters/liepin.js'
 import { extractBossPreviews, extractOpenBossResume, hasSingleVisibleBossFrame } from './adapters/boss.js'
 import { resumeDigest } from './assessments.js'
 import { animateOpenCandidate } from './adapters/candidate-action.js'
+import { actOnBrowserFrame, inspectBrowserFrame, type BrowserFrameSnapshot } from './adapters/browser-use.js'
 
 export type { Platform, RecruitmentPage } from './platforms.js'
 
@@ -21,6 +22,7 @@ export class RecruitmentBrowser {
   readonly view: WebContentsView
   private status: BrowserStatus
   private disposed = false
+  private lastSnapshot?: { id: string; url: string; frames: Map<string, WebFrameMain>; frameUrls: Map<string, string>; signatures: Map<string, string> }
 
   constructor(private readonly window: BrowserWindow, readonly platform: Platform, private readonly onStatus: (status: BrowserStatus) => void) {
     this.status = { platform, url: '', title: '', loading: false }
@@ -72,6 +74,66 @@ export class RecruitmentBrowser {
 
   async reload(): Promise<void> {
     this.view.webContents.reload()
+  }
+
+  /** Bounded, page-agnostic observation for search results as well as recommendations. */
+  async snapshotPage(): Promise<{ snapshotId: string; platform: Platform; path: string; title: string; frames: BrowserFrameSnapshot[] }> {
+    const contents = this.view.webContents
+    const url = contents.getURL()
+    if (!isRecruitmentUrl(url, this.platform) || contents.isLoading()) throw new Error('招聘页面尚未加载完成')
+    const frameMap = new Map<string, WebFrameMain>([['main', contents.mainFrame]])
+    if (this.platform === 'boss') {
+      try { frameMap.set('recommend', await this.getBossRecommendFrame()) } catch { /* not on recommendation page */ }
+    }
+    const frames: BrowserFrameSnapshot[] = []
+    for (const [key, frame] of frameMap) {
+      if (frame.isDestroyed() || !isRecruitmentUrl(frame.url, this.platform)) continue
+      const frameUrl = frame.url
+      const result: unknown = await frame.executeJavaScript(`(${inspectBrowserFrame.toString()})(document, ${JSON.stringify(key)})`)
+      if (frame.isDestroyed() || frame.url !== frameUrl || contents.getURL() !== url || contents.isLoading()) throw new Error('读取时页面发生变化，请重试')
+      if (!result || typeof result !== 'object') throw new Error('无法读取当前页面')
+      const snapshot = result as BrowserFrameSnapshot
+      if (!Array.isArray(snapshot.controls) || typeof snapshot.text !== 'string' || snapshot.text.length > 16_000) throw new Error('页面快照格式无效')
+      frames.push(snapshot)
+    }
+    if (frames.length === 0) throw new Error('当前页面没有可读取的站内内容')
+    const id = randomBytes(12).toString('hex')
+    this.lastSnapshot = { id, url, frames: frameMap,
+      frameUrls: new Map(Array.from(frameMap, ([key, frame]) => [key, frame.url])),
+      signatures: new Map(frames.flatMap(frame => frame.controls.map(control => [control.ref, control.signature]))) }
+    return { snapshotId: id, platform: this.platform, path: new URL(url).pathname, title: contents.getTitle().slice(0, 200), frames }
+  }
+
+  async actOnPage(value: unknown): Promise<{ done: boolean; action: string }> {
+    if (!value || typeof value !== 'object') throw new Error('浏览器动作格式无效')
+    const input = value as Record<string, unknown>
+    const snapshot = this.lastSnapshot
+    const contents = this.view.webContents
+    if (!snapshot || input.snapshotId !== snapshot.id || contents.getURL() !== snapshot.url || contents.isLoading()) throw new Error('页面快照已过期，请重新识别当前页面')
+    if (!['fill', 'press_enter', 'click', 'scroll_up', 'scroll_down'].includes(String(input.action))) throw new Error('不支持的浏览器动作')
+    if (input.action === 'fill' && (typeof input.value !== 'string' || input.value.length < 1 || input.value.length > 200)) throw new Error('搜索词长度无效')
+    const scrolling = input.action === 'scroll_up' || input.action === 'scroll_down'
+    if (!scrolling && (typeof input.ref !== 'string' || !snapshot.signatures.has(input.ref))) throw new Error('元素引用无效，请重新识别页面')
+    const frameKey = scrolling ? 'main' : (input.ref as string).split(':e')[0]
+    const frame = snapshot.frames.get(frameKey)
+    if (!frame || frame.isDestroyed() || frame.url !== snapshot.frameUrls.get(frameKey) || !isRecruitmentUrl(frame.url, this.platform)) throw new Error('页面框架已变化，请重试')
+    const action = scrolling
+      ? { type: 'scroll', direction: input.action === 'scroll_down' ? 'down' : 'up' }
+      : { type: input.action, ref: input.ref, value: input.value }
+    const expected = scrolling ? '' : snapshot.signatures.get(input.ref as string)!
+    const result: unknown = await frame.executeJavaScript(`(() => {
+      const inspectBrowserFrame = ${inspectBrowserFrame.toString()};
+      return (${actOnBrowserFrame.toString()})(document, ${JSON.stringify(action)}, ${JSON.stringify(expected)});
+    })()`)
+    if (!result || typeof result !== 'object' || (result as { done?: boolean }).done !== true) throw new Error('页面元素已变化或该动作不可用，请重新识别页面')
+    if (input.action === 'press_enter') {
+      contents.focus()
+      contents.sendInputEvent({ type: 'rawKeyDown', keyCode: 'Enter' })
+      contents.sendInputEvent({ type: 'char', keyCode: 'Enter' })
+      contents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
+    }
+    this.lastSnapshot = undefined
+    return result as { done: boolean; action: string }
   }
 
   private async getBossRecommendFrame(): Promise<WebFrameMain> {

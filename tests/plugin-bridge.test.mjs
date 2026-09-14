@@ -23,6 +23,8 @@ test('AgentHR tools read synthetic role and resume, then save an evidence-backed
     async value => { browserActions.push(['job', value]); return { ...value, id: 'synthetic' } },
     async platform => { browserActions.push(['navigate', platform]); return { platform, page: 'recommend' } },
     async fingerprint => { browserActions.push(['candidate', fingerprint]); return { opened: true, name: resume.name } },
+    async () => ({ snapshotId: 'abc123', platform: 'liepin', path: '/search', frames: [{ frame: 'main', text: 'Java 工程师', controls: [{ ref: 'main:e0', kind: 'search_input', label: '搜索职位' }] }] }),
+    async value => { browserActions.push(['browser', value]); return { done: true, action: value.action } },
   )
   const address = await bridge.start()
   const oldUrl = process.env.AGENTHR_BRIDGE_URL
@@ -40,6 +42,8 @@ test('AgentHR tools read synthetic role and resume, then save an evidence-backed
     const job = (await call('agenthr_get_job_brief')).jobBrief
     const current = (await call('agenthr_read_open_resume')).resume
     assert.equal((await call('agenthr_browser_status')).page, 'recommend')
+    assert.equal((await call('agenthr_browser_snapshot')).snapshot.frames[0].text, 'Java 工程师')
+    assert.equal((await call('agenthr_browser_action', { snapshotId: 'abc123', action: 'fill', ref: 'main:e0', value: 'Java 工程师' })).result.done, true)
     assert.equal((await call('agenthr_list_visible_candidates')).candidates[0].fingerprint, candidateFingerprint)
     assert.equal(job.role, brief.role)
     assert.equal(current.name, resume.name)
@@ -60,7 +64,7 @@ test('AgentHR tools read synthetic role and resume, then save an evidence-backed
     assert.equal(created.jobBrief.id, 'synthetic')
     assert.equal((await call('agenthr_open_recommendations', { platform: 'liepin' })).result.page, 'recommend')
     assert.equal((await call('agenthr_open_candidate_preview', { fingerprint: candidateFingerprint })).result.opened, true)
-    assert.deepEqual(browserActions.map(action => action[0]), ['job', 'navigate', 'candidate'])
+    assert.deepEqual(browserActions.map(action => action[0]), ['browser', 'job', 'navigate', 'candidate'])
     assert.equal([...registered.keys()].some(name => /send|message/iu.test(name)), false)
   } finally {
     if (oldUrl === undefined) delete process.env.AGENTHR_BRIDGE_URL
