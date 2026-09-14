@@ -1,7 +1,7 @@
 import { WebContentsView, type BrowserWindow, type Rectangle, type WebFrameMain } from 'electron'
 import { PLATFORMS, isRecruitmentUrl, type Platform, type RecruitmentPage } from './platforms.js'
 import { extractLiepinPreviews, extractOpenLiepinResume, parseCandidatePreviews, parseOpenResume, type CandidatePreview, type OpenResume } from './adapters/liepin.js'
-import { extractBossPreviews, extractOpenBossResume, hasSingleVisibleBossResumeFrame } from './adapters/boss.js'
+import { extractBossPreviews, extractOpenBossResume, hasSingleVisibleBossFrame } from './adapters/boss.js'
 import { resumeDigest } from './assessments.js'
 
 export type { Platform, RecruitmentPage } from './platforms.js'
@@ -72,8 +72,12 @@ export class RecruitmentBrowser {
     this.view.webContents.reload()
   }
 
-  private getBossRecommendFrame(): WebFrameMain {
+  private async getBossRecommendFrame(): Promise<WebFrameMain> {
     const contents = this.view.webContents
+    const visible: unknown = await contents.mainFrame.executeJavaScript(
+      `(${hasSingleVisibleBossFrame.toString()})(document, "iframe[name='recommendFrame']")`,
+    )
+    if (visible !== true) throw new Error('没有唯一可见的 BOSS 推荐页框架')
     const frames = contents.mainFrame.framesInSubtree.filter(frame =>
       frame.name === 'recommendFrame' && frame.parent === contents.mainFrame
         && isRecruitmentUrl(frame.url, 'boss') && !frame.isDestroyed(),
@@ -94,7 +98,7 @@ export class RecruitmentBrowser {
       throw new Error(`请先在${PLATFORMS[this.platform].name}打开推荐候选人页面`)
     }
     if (contents.isLoading()) throw new Error('页面加载中，请稍后重试')
-    const frame = this.platform === 'boss' ? this.getBossRecommendFrame() : contents.mainFrame
+    const frame = this.platform === 'boss' ? await this.getBossRecommendFrame() : contents.mainFrame
     const frameUrl = frame.url
     const extract = this.platform === 'boss' ? extractBossPreviews : extractLiepinPreviews
     const result: unknown = await frame.executeJavaScript(`(${extract.toString()})(document)`)
@@ -114,9 +118,11 @@ export class RecruitmentBrowser {
     let recommendFrame: WebFrameMain | undefined
     let extract: (doc: Document) => OpenResume | null = extractOpenLiepinResume
     if (this.platform === 'boss') {
-      const recommend = this.getBossRecommendFrame()
+      const recommend = await this.getBossRecommendFrame()
       recommendFrame = recommend
-      const hasVisibleDetail: unknown = await recommend.executeJavaScript(`(${hasSingleVisibleBossResumeFrame.toString()})(document)`)
+      const hasVisibleDetail: unknown = await recommend.executeJavaScript(
+        `(${hasSingleVisibleBossFrame.toString()})(document, "iframe[src*='/web/frame/c-resume/']")`,
+      )
       if (hasVisibleDetail !== true) throw new Error('请在 BOSS 推荐页手动打开恰好一份可见简历')
       const frames = recommend.framesInSubtree.filter(candidate => candidate.parent === recommend
         && isRecruitmentUrl(candidate.url, 'boss')
@@ -132,7 +138,12 @@ export class RecruitmentBrowser {
     if (frame.isDestroyed() || frame.url !== frameUrl) throw new Error('简历框架已变化，请重试')
     if (recommendFrame) {
       if (recommendFrame.isDestroyed() || frame.parent !== recommendFrame
-        || await recommendFrame.executeJavaScript(`(${hasSingleVisibleBossResumeFrame.toString()})(document)`) !== true) {
+        || await recommendFrame.executeJavaScript(
+          `(${hasSingleVisibleBossFrame.toString()})(document, "iframe[src*='/web/frame/c-resume/']")`,
+        ) !== true
+        || await contents.mainFrame.executeJavaScript(
+          `(${hasSingleVisibleBossFrame.toString()})(document, "iframe[name='recommendFrame']")`,
+        ) !== true) {
         throw new Error('简历详情已关闭或变化，请重试')
       }
     }

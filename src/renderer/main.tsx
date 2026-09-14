@@ -36,6 +36,11 @@ function App() {
     return window.agenthr.onStatus(setStatus)
   }, [])
 
+  useEffect(() => {
+    setCandidates([])
+    setResume(null)
+  }, [status.browser?.platform, status.browser?.url, status.browser?.loading])
+
   async function run(action: () => Promise<void>) {
     setBusy(true)
     setError('')
@@ -124,7 +129,7 @@ function App() {
           {candidate.summary && <p>{candidate.summary}</p>}
         </article>)}</div>}
         <button className="read-button secondary" disabled={busy} onClick={() => void run(async () => { setResume(null); setResume(await window.agenthr.readOpenResume()) })}>读取已打开的简历详情</button>
-        <p className="hint">请先在右侧由你手动打开一份简历；读取动作不会点击候选人。</p>
+        <p className="hint">请先在右侧手动打开一份简历；读取动作不会点击候选人。这里显示读取时的快照，切换候选人后请重新读取。</p>
         {resume && <div className="resume-detail"><strong>{resume.name || '当前简历'}</strong><pre>{resume.text}</pre></div>}
       </section>
 
