@@ -1,8 +1,9 @@
 import type { CandidatePreview } from './liepin.js'
 import type { Platform } from '../platforms.js'
+import { beginBrowserVisual, type PointerPoint } from './browser-visual.js'
 
 /** Runs in the site frame. The only click target is GoodHR5's candidate-detail region. */
-export async function animateOpenCandidate(doc: Document, input: CandidatePreview & { platform: Platform }, durationMs = 650): Promise<{ opened: boolean; name: string }> {
+export async function animateOpenCandidate(doc: Document, input: CandidatePreview & { platform: Platform }, durationMs = 1100, previous: PointerPoint | null = null): Promise<{ opened: boolean; name: string; pointer?: PointerPoint }> {
   const cardSelector = input.platform === 'boss'
     ? '.card-list .candidate-card-wrap, .recommend-card-list .candidate-card-wrap'
     : "[data-tlg-elem-id='b_pc_home_hp_res_listcard'], [data-tlg-elem-id='b_pc_home_new_res_listcard']"
@@ -30,27 +31,13 @@ export async function animateOpenCandidate(doc: Document, input: CandidatePrevie
   if (!target || target.closest('.btn-greet, .btn-getcontact, [data-tlg-elem-id*="chat_btn"]')) {
     return { opened: false, name: '' }
   }
-  card.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
-  const border = doc.createElement('div')
-  border.setAttribute('data-agenthr-visual', 'border')
-  border.style.cssText = 'position:fixed;inset:4px;border:3px solid #e82127;box-shadow:0 0 0 4px rgba(232,33,39,.25),inset 0 0 24px rgba(232,33,39,.2);border-radius:10px;z-index:2147483646;pointer-events:none;'
-  const pointer = doc.createElement('div')
-  pointer.setAttribute('data-agenthr-visual', 'pointer')
-  pointer.textContent = '➤'
-  pointer.style.cssText = 'position:fixed;left:0;top:0;width:34px;height:34px;display:grid;place-items:center;border-radius:50%;background:#e82127;color:white;font:22px Arial;box-shadow:0 6px 22px rgba(0,0,0,.35);z-index:2147483647;pointer-events:none;transition:transform .48s ease-out;'
-  doc.body.append(border, pointer)
+  const visual = await beginBrowserVisual(doc, target, previous, durationMs)
   try {
-    const rect = target.getBoundingClientRect?.()
-    const x = rect ? Math.max(12, rect.left + rect.width / 2) : 24
-    const y = rect ? Math.max(12, rect.top + rect.height / 2) : 24
-    pointer.getBoundingClientRect?.()
-    pointer.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`
-    await new Promise(resolveWait => setTimeout(resolveWait, durationMs))
+    if (durationMs > 0) await new Promise(resolveWait => setTimeout(resolveWait, 260))
     target.click()
     await new Promise(resolveWait => setTimeout(resolveWait, Math.min(durationMs, 450)))
-    return { opened: true, name: input.name }
+    return { opened: true, name: input.name, pointer: visual.point }
   } finally {
-    pointer.remove()
-    border.remove()
+    visual.border.remove()
   }
 }

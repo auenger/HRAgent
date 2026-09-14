@@ -16,9 +16,19 @@ test('search result snapshot works outside recommend and excludes contact contro
   assert.equal(snapshot.controls[0].label, '搜索职位或人才')
   const input = snapshot.controls[0]
   const filled = await actOnBrowserFrame(document, { type: 'fill', ref: input.ref, value: 'Java 工程师' }, input.signature, 0)
-  assert.deepEqual(filled, { done: true, action: 'fill' })
+  assert.equal(filled.done, true)
+  assert.equal(filled.action, 'fill')
+  assert.ok(filled.pointer)
   assert.equal(document.querySelector('#searchKeyword').value, 'Java 工程师')
-  assert.equal(document.querySelectorAll('[data-agenthr-visual]').length, 0)
+  const pointer = document.querySelector('[data-agenthr-visual="pointer"]')
+  assert.ok(pointer)
+  assert.match(pointer.style.filter, /drop-shadow/u)
+  assert.equal(document.querySelectorAll('[data-agenthr-visual="border"]').length, 0)
+  const next = inspectBrowserFrame(document, 'main').controls.find(control => control.label === '搜索')
+  const clicked = await actOnBrowserFrame(document, { type: 'click', ref: next.ref }, next.signature, 0, filled.pointer)
+  assert.equal(clicked.done, true)
+  assert.equal(document.querySelector('[data-agenthr-visual="pointer"]'), pointer)
+  assert.equal(document.querySelectorAll('[data-agenthr-visual="border"]').length, 0)
 })
 
 test('browser action stops when a search control changes after snapshot', async () => {

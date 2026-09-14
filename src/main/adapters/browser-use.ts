@@ -1,3 +1,5 @@
+import { beginBrowserVisual, type PointerPoint } from './browser-visual.js'
+
 export interface BrowserControl {
   ref: string
   kind: 'search_input' | 'button' | 'link'
@@ -49,7 +51,7 @@ export function inspectBrowserFrame(doc: Document, frame: string): BrowserFrameS
       if (!label) continue
       kind = 'button'
     }
-    if (/沟通|联系|私信|发消息|发送|打招呼|聊天|邀约|邀请|投递|推荐给|收藏|chat|contact|message|send|greet|invite|apply|submit|favorite|薪资|工资|意向/iu.test(`${label} ${identifier}`)) continue
+    if (/沟通|联系|私信|发消息|发送|打招呼|聊天|邀约|邀请|投递|推荐给|收藏|chat|contact|message|send|greet|invite|apply|submit|favorite/iu.test(`${label} ${identifier}`)) continue
     const href = kind === 'link' ? compact(element.getAttribute('href') || '', 200) : ''
     controls.push({ ref: `${frame}:e${index}`, kind, label: label || identifier || '搜索输入框', signature: `${tag}|${kind}|${label}|${identifier}|${href}` })
   }
@@ -60,10 +62,13 @@ export function inspectBrowserFrame(doc: Document, frame: string): BrowserFrameS
 }
 
 /** Re-inspects a frozen page reference before acting. No arbitrary selector or script reaches this function. */
-export async function actOnBrowserFrame(doc: Document, action: BrowserUseAction, expectedSignature: string, durationMs = 550): Promise<{ done: boolean; action: string }> {
+export async function actOnBrowserFrame(doc: Document, action: BrowserUseAction, expectedSignature: string, durationMs = 1050, previous: PointerPoint | null = null): Promise<{ done: boolean; action: string; pointer?: PointerPoint }> {
   if (action.type === 'scroll') {
-    doc.defaultView?.scrollBy?.({ top: action.direction === 'down' ? 520 : -520, behavior: 'smooth' })
-    return { done: true, action: `scroll_${action.direction}` }
+    const visual = await beginBrowserVisual(doc, null, previous, durationMs)
+    try {
+      doc.defaultView?.scrollBy?.({ top: action.direction === 'down' ? 520 : -520, behavior: 'smooth' })
+      return { done: true, action: `scroll_${action.direction}`, pointer: visual.point }
+    } finally { visual.border.remove() }
   }
   const frame = action.ref.split(':e')[0]
   const snapshot = inspectBrowserFrame(doc, frame)
@@ -76,7 +81,7 @@ export async function actOnBrowserFrame(doc: Document, action: BrowserUseAction,
   if (action.type === 'press_enter' && control.kind !== 'search_input') return { done: false, action: 'not_search_input' }
   if (action.type === 'click') {
     if (control.kind === 'search_input') return { done: false, action: 'not_clickable' }
-    if (control.kind === 'button' && !/搜索|查询|筛选|过滤|确定|应用|下一页|上一页|候选|简历|查看|详情|search|filter|next|previous|resume|detail/iu.test(control.label)) {
+    if (control.kind === 'button' && !/搜索|查询|筛选|过滤|确定|应用|下一页|上一页|候选|简历|查看|详情|薪资|工资|期望|意向|search|filter|next|previous|resume|detail|salary|intent/iu.test(control.label)) {
       return { done: false, action: 'button_not_allowed' }
     }
     if (control.kind === 'link') {
@@ -91,20 +96,9 @@ export async function actOnBrowserFrame(doc: Document, action: BrowserUseAction,
       }
     }
   }
-  const border = doc.createElement('div')
-  border.setAttribute('data-agenthr-visual', 'border')
-  border.style.cssText = 'position:fixed;inset:4px;border:3px solid #e82127;box-shadow:0 0 0 4px rgba(232,33,39,.25),inset 0 0 24px rgba(232,33,39,.2);border-radius:10px;z-index:2147483646;pointer-events:none;'
-  const pointer = doc.createElement('div')
-  pointer.setAttribute('data-agenthr-visual', 'pointer')
-  pointer.textContent = '➤'
-  pointer.style.cssText = 'position:fixed;left:0;top:0;width:34px;height:34px;display:grid;place-items:center;border-radius:50%;background:#e82127;color:white;font:22px Arial;box-shadow:0 6px 22px rgba(0,0,0,.35);z-index:2147483647;pointer-events:none;transition:transform .48s ease-out;'
-  doc.body.append(border, pointer)
+  const visual = await beginBrowserVisual(doc, element, previous, durationMs)
   try {
-    element.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
-    const rect = element.getBoundingClientRect?.()
-    pointer.getBoundingClientRect?.()
-    pointer.style.transform = `translate(${Math.round(rect ? rect.left + rect.width / 2 : 24)}px, ${Math.round(rect ? rect.top + rect.height / 2 : 24)}px)`
-    await new Promise(resolveWait => setTimeout(resolveWait, durationMs))
+    if (durationMs > 0) await new Promise(resolveWait => setTimeout(resolveWait, 260))
     if (action.type === 'fill') {
       const input = element as HTMLInputElement
       const setter = Object.getOwnPropertyDescriptor(doc.defaultView?.HTMLInputElement?.prototype ?? HTMLInputElement.prototype, 'value')?.set
@@ -120,9 +114,8 @@ export async function actOnBrowserFrame(doc: Document, action: BrowserUseAction,
     } else {
       element.click()
     }
-    return { done: true, action: action.type }
+    return { done: true, action: action.type, pointer: visual.point }
   } finally {
-    border.remove()
-    pointer.remove()
+    visual.border.remove()
   }
 }

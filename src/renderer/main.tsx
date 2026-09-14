@@ -99,7 +99,7 @@ function App() {
       {workspaceTab === 'chat' && <div className="quick-actions">
         <button disabled={busy || dshPhase !== 'ready'} onClick={() => void run(() => fillQuickPrompt('请识别当前招聘页面并读取页面快照。如果是搜索结果页，直接概括当前可见内容；不用先配置岗位，也不要发送消息。'))}>识别当前页</button>
         <button disabled={busy || dshPhase !== 'ready'} onClick={() => void run(() => fillQuickPrompt('请根据我接下来描述的招聘需求，整理岗位名称、完整要求和逐项技能条件，并保存为当前岗位。岗位需求：'))}>描述岗位</button>
-        <button disabled={busy || dshPhase !== 'ready'} onClick={() => void run(() => fillQuickPrompt('请读取当前岗位和已打开的简历，逐项判断技能证据，引用原文，生成需要确认的技能问题草稿，并保存分析卡片。不要询问薪资或求职意向，不要发送消息。'))}>分析简历</button>
+        <button disabled={busy || dshPhase !== 'ready'} onClick={() => void run(() => fillQuickPrompt('请读取当前岗位和已打开的简历，逐项判断技能证据，引用原文，生成需要确认的技能问题草稿，并保存分析卡片。不要向候选人发送消息。'))}>分析简历</button>
       </div>}
       {workspaceTab === 'chat' && <div className="chat-placeholder">
         <span className="eyebrow">AGENT / CONVERSATION</span>
@@ -210,7 +210,7 @@ function App() {
         <ol><li>检索并读取候选人</li><li>判断 tMCAO / MCAO 证据</li><li>生成技能确认问题草稿</li><li>形成可追溯分析卡片</li></ol>
       </section>
 
-      <div className="footer-note">浏览器会话独立保存在本机。第一版不自动发送消息，也不追问薪资或求职意向。</div>
+      <div className="footer-note">浏览器会话独立保存在本机。可按你的要求分析页面中可见的薪资与求职意向；不会自动联系候选人。</div>
       {status.dsh?.detail && <p className="runtime-detail">DSH：{status.dsh.detail}</p>}
       {error && <p className="alert">{error}</p>}
       </div>

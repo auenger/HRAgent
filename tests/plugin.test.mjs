@@ -25,5 +25,6 @@ test('DSH plugin registers criterion-level draft analysis without a message tool
   assert.equal(save.parameters.properties.findings.type, 'array')
   assert.deepEqual(save.parameters.required, ['sourceDigest', 'jobBriefDigest', 'findings'])
   assert.match(prompts[0].text, /每项技能分别判断/)
-  assert.match(prompts[0].text, /不发送消息/)
+  assert.match(prompts[0].text, /不要主动向候选人追问或发送消息/)
+  assert.match(prompts[0].text, /可以读取和汇总当前页面或简历中显示的薪资与求职意向/)
 })

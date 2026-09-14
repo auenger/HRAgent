@@ -6,6 +6,7 @@ import { extractBossPreviews, extractOpenBossResume, hasSingleVisibleBossFrame }
 import { resumeDigest } from './assessments.js'
 import { animateOpenCandidate } from './adapters/candidate-action.js'
 import { actOnBrowserFrame, inspectBrowserFrame, type BrowserFrameSnapshot } from './adapters/browser-use.js'
+import { beginBrowserVisual, restoreBrowserPointer, type PointerPoint } from './adapters/browser-visual.js'
 
 export type { Platform, RecruitmentPage } from './platforms.js'
 
@@ -22,6 +23,7 @@ export class RecruitmentBrowser {
   readonly view: WebContentsView
   private status: BrowserStatus
   private disposed = false
+  private lastPointer: PointerPoint | null = null
   private lastSnapshot?: { id: string; url: string; frames: Map<string, WebFrameMain>; frameUrls: Map<string, string>; signatures: Map<string, string> }
 
   constructor(private readonly window: BrowserWindow, readonly platform: Platform, private readonly onStatus: (status: BrowserStatus) => void) {
@@ -48,7 +50,12 @@ export class RecruitmentBrowser {
       }
     })
     contents.on('did-start-loading', () => this.update({ loading: true, error: undefined }))
-    contents.on('did-stop-loading', () => this.update({ loading: false, url: contents.getURL(), title: contents.getTitle() }))
+    contents.on('did-stop-loading', () => {
+      this.update({ loading: false, url: contents.getURL(), title: contents.getTitle() })
+      if (!this.disposed && this.lastPointer && isRecruitmentUrl(contents.getURL(), platform)) {
+        void contents.mainFrame.executeJavaScript(`(${restoreBrowserPointer.toString()})(document, ${JSON.stringify(this.lastPointer)})`).catch(() => {})
+      }
+    })
     contents.on('page-title-updated', (_event, title) => this.update({ title }))
     contents.on('did-navigate-in-page', (_event, url) => this.update({ url }))
     contents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
@@ -122,10 +129,13 @@ export class RecruitmentBrowser {
       : { type: input.action, ref: input.ref, value: input.value }
     const expected = scrolling ? '' : snapshot.signatures.get(input.ref as string)!
     const result: unknown = await frame.executeJavaScript(`(() => {
+      const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
+      const beginBrowserVisual = ${beginBrowserVisual.toString()};
       const inspectBrowserFrame = ${inspectBrowserFrame.toString()};
-      return (${actOnBrowserFrame.toString()})(document, ${JSON.stringify(action)}, ${JSON.stringify(expected)});
+      return (${actOnBrowserFrame.toString()})(document, ${JSON.stringify(action)}, ${JSON.stringify(expected)}, 1100, ${JSON.stringify(this.lastPointer)});
     })()`)
     if (!result || typeof result !== 'object' || (result as { done?: boolean }).done !== true) throw new Error('页面元素已变化或该动作不可用，请重新识别页面')
+    this.lastPointer = (result as { pointer?: PointerPoint }).pointer ?? this.lastPointer
     if (input.action === 'press_enter') {
       contents.focus()
       contents.sendInputEvent({ type: 'rawKeyDown', keyCode: 'Enter' })
@@ -133,7 +143,7 @@ export class RecruitmentBrowser {
       contents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
     }
     this.lastSnapshot = undefined
-    return result as { done: boolean; action: string }
+    return { done: true, action: (result as { action: string }).action }
   }
 
   private async getBossRecommendFrame(): Promise<WebFrameMain> {
@@ -182,11 +192,16 @@ export class RecruitmentBrowser {
     const contents = this.view.webContents
     const frame = this.platform === 'boss' ? await this.getBossRecommendFrame() : contents.mainFrame
     const input = { ...matches[0], platform: this.platform }
-    const result: unknown = await frame.executeJavaScript(`(${animateOpenCandidate.toString()})(document, ${JSON.stringify(input)})`)
+    const result: unknown = await frame.executeJavaScript(`(() => {
+      const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
+      const beginBrowserVisual = ${beginBrowserVisual.toString()};
+      return (${animateOpenCandidate.toString()})(document, ${JSON.stringify(input)}, 1100, ${JSON.stringify(this.lastPointer)});
+    })()`)
     if (!result || typeof result !== 'object' || (result as { opened?: boolean }).opened !== true) {
       throw new Error('候选人详情入口已变化，请重新读取当前列表')
     }
-    return result as { opened: boolean; name: string }
+    this.lastPointer = (result as { pointer?: PointerPoint }).pointer ?? this.lastPointer
+    return { opened: true, name: (result as { name: string }).name }
   }
 
   async readOpenResume(): Promise<OpenResume & { sourceDigest: string }> {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { app, BrowserWindow, WebContentsView } from 'electron'
 import { actOnBrowserFrame, inspectBrowserFrame } from '../dist/main/adapters/browser-use.js'
+import { beginBrowserVisual, restoreBrowserPointer } from '../dist/main/adapters/browser-visual.js'
 
 app.whenReady().then(async () => {
   const window = new BrowserWindow({ show: true, width: 900, height: 650 })
@@ -21,12 +22,15 @@ app.whenReady().then(async () => {
     assert.deepEqual(first.controls.map(control => control.kind), ['search_input', 'button'])
     const search = first.controls[0]
     const act = (action, signature) => view.webContents.executeJavaScript(`(() => {
+      const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
+      const beginBrowserVisual = ${beginBrowserVisual.toString()};
       const inspectBrowserFrame = ${inspectBrowserFrame.toString()};
       return (${actOnBrowserFrame.toString()})(document, ${JSON.stringify(action)}, ${JSON.stringify(signature)}, 0)
     })()`)
     assert.equal((await act({ type: 'fill', ref: search.ref, value: 'Java 工程师' }, search.signature)).done, true)
     const second = await read()
     assert.equal((await act({ type: 'press_enter', ref: second.controls[0].ref }, second.controls[0].signature)).done, true)
+    assert.equal(await view.webContents.executeJavaScript('document.querySelectorAll("[data-agenthr-visual=pointer]").length'), 1)
     window.focus()
     view.webContents.focus()
     assert.equal(window.isFocused(), true)

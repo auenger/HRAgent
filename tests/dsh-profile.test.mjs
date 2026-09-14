@@ -16,7 +16,8 @@ test('current DSH accepts AgentHR-only preset and plugin configuration offline',
     assert.match(persona, /complete: true/)
     assert.match(persona, /不能把泛称动物实验或 MCAO 自动等同于 tMCAO/)
     assert.match(persona, /sourceDigest.*jobBriefDigest/u)
-    assert.match(persona, /不询问或评估薪资、求职意向，不发送消息/u)
+    assert.match(persona, /可读取并汇总页面或简历中显示的薪资和求职意向/u)
+    assert.match(persona, /不要主动向候选人追问或发送消息/u)
     assert.doesNotMatch(persona, /tool-bash|tool-fs/)
     const result = spawnSync(process.execPath, [cli, '--profile', 'web', '--patch', patch, '--dump-config'], {
       encoding: 'utf8', timeout: 30_000,
