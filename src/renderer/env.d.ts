@@ -51,6 +51,7 @@ interface Window {
     listAssessments(scope: 'active' | 'all'): Promise<AssessmentCard[]>
     setReviewStatus(id: string, status: AssessmentCard['reviewStatus']): Promise<AssessmentCard>
     openDsh(): Promise<void>
+    restartDsh(): Promise<void>
     onStatus(listener: (status: AgentHrStatus) => void): () => void
   }
 }

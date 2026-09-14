@@ -25,6 +25,7 @@ let bridge: AgentHrBridge | undefined
 let dshWindow: BrowserWindow | undefined
 let jobBriefStore: JobBriefStore
 let assessmentStore: AssessmentStore
+let quitting = false
 
 function browserBounds(): Rectangle {
   const [width, height] = window?.getContentSize() ?? [1200, 800]
@@ -87,10 +88,12 @@ async function verifyOfflineWindow(): Promise<void> {
     const jobs = await window.agenthr.listJobs()
     const cards = await window.agenthr.listAssessments('all')
     return { title: document.title, text: document.body.innerText,
-      bridge: typeof window.agenthr.openDsh, browser: status.browser ?? null,
+      bridge: typeof window.agenthr.openDsh, restartBridge: typeof window.agenthr.restartDsh,
+      browser: status.browser ?? null,
       jobCount: jobs.jobs.length, cardCount: cards.length }
-  })()`, true) as { title: string; text: string; bridge: string; browser: unknown; jobCount: number; cardCount: number }
-  if (result.bridge !== 'function' || result.browser !== null || result.jobCount !== 0 || result.cardCount !== 0
+  })()`, true) as { title: string; text: string; bridge: string; restartBridge: string; browser: unknown; jobCount: number; cardCount: number }
+  if (result.bridge !== 'function' || result.restartBridge !== 'function'
+    || result.browser !== null || result.jobCount !== 0 || result.cardCount !== 0
     || !result.text.includes('当前岗位条件') || !result.text.includes('分析队列')) {
     throw new Error('Offline renderer or preload bridge did not initialize as expected')
   }
@@ -160,6 +163,16 @@ app.whenReady().then(async () => {
     })
     await dshWindow.loadURL(status.url)
   })
+  ipcMain.handle('agenthr:restart-dsh', async () => {
+    if (offlineSmoke) throw new Error('离线验证模式不启动 DSH')
+    if (!dsh) throw new Error('DSH Host 不可用')
+    if (!['failed', 'stopped', 'unconfigured'].includes(dsh.getStatus().phase)) {
+      throw new Error('DSH Host 正在启动或运行中')
+    }
+    if (dshWindow && !dshWindow.isDestroyed()) dshWindow.close()
+    dshWindow = undefined
+    await dsh.restart()
+  })
   await createWindow()
   if (offlineSmoke) {
     try { await verifyOfflineWindow(); app.quit() }
@@ -169,6 +182,15 @@ app.whenReady().then(async () => {
   }
 })
 
-app.on('before-quit', () => { dsh?.stop(); void bridge?.stop(); assessmentStore?.close() })
+app.on('before-quit', event => {
+  if (quitting) return
+  event.preventDefault()
+  quitting = true
+  void (async () => {
+    try { await dsh?.shutdown() } catch (error) { console.error('[DSH shutdown]', error) }
+    try { await bridge?.stop() } catch (error) { console.error('[bridge shutdown]', error) }
+    try { assessmentStore?.close() } catch (error) { console.error('[database shutdown]', error) }
+  })().finally(() => app.quit())
+})
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
 app.on('activate', () => { if (!window) void createWindow() })

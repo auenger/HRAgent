@@ -16,6 +16,7 @@ const api = {
   listAssessments: (scope: 'active' | 'all') => ipcRenderer.invoke('agenthr:list-assessments', scope),
   setReviewStatus: (id: string, status: 'draft' | 'needs_clarification' | 'reviewed') => ipcRenderer.invoke('agenthr:set-review-status', id, status),
   openDsh: () => ipcRenderer.invoke('agenthr:open-dsh'),
+  restartDsh: () => ipcRenderer.invoke('agenthr:restart-dsh'),
   onStatus: (listener: (status: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: unknown) => listener(status)
     ipcRenderer.on('agenthr:status-changed', handler)

@@ -31,7 +31,7 @@ pnpm smoke:gui:package
 
 - `src/main/recruitment-browser.ts`：Electron `WebContentsView`，按站点隔离 `persist:` Session，限制主页面导航和弹窗；登录凭据由招聘网站页面及其 Session 管理，不写入 AgentHR 项目文件。
 - `src/main/platforms.ts`：站点地址和允许的域名。BOSS 推荐页与猎聘登录/推荐页地址参考 GoodHR 的平台配置；猎聘独立沟通页尚未确认，因此没有臆造 URL。
-- `src/main/dsh-host.ts`、`src/main/dsh-profile.ts`：优先使用项目固定的 DSH 版本，通过受管的 Electron Node 子进程启动 DSH Web Host；启动时写入仅含招聘分析人格的 AgentHR preset，并通过 `--patch` 禁用 DSH 随附及用户自定义 preset、加载 AgentHR 插件。Host 从 DSH 的启动输出提取带认证 token 的 Web 入口地址。显式 CLI/Node 路径仍可作开发覆盖。
+- `src/main/dsh-host.ts`、`src/main/dsh-profile.ts`：优先使用项目固定的 DSH 版本，通过受管的 Electron Node 子进程启动 DSH Web Host；启动时写入仅含招聘分析人格的 AgentHR preset，并通过 `--patch` 禁用 DSH 随附及用户自定义 preset、加载 AgentHR 插件。Host 从 DSH 的启动输出提取带认证 token 的 Web 入口地址。失败或停止后，工作台可重试 Host；重启会先等待旧子进程退出，应用退出也会有序关闭 Host。显式 CLI/Node 路径仍可作开发覆盖。
 - `src/main/adapters/liepin.ts`：参考 goodhr5 的猎聘选择器，读取当前推荐页至多 30 张候选人卡片；只在招聘人员手动打开恰好一份简历弹窗后读取弹窗内容。仅用模拟 DOM 验证，真实页面选择器由用户自行测试。
 - `src/main/adapters/boss.ts`：参考 goodhr5 的 BOSS 推荐页 `recommendFrame`、卡片和内层简历 iframe 结构，只读当前卡片及招聘人员已打开的唯一可见简历。仅用模拟 DOM 验证；实际 iframe 层级、选择器和简历完整度由用户自行测试。
 - `src/main/job-brief.ts`：招聘人员可创建、切换、编辑本机岗位条件，并为每个岗位列出最多 12 项逐项分析的技能条件；旧版单岗位 JSON 在首次读取时迁移为岗位列表，旧版长段要求保留原文并配一个可编辑的过渡条件。新建岗位尚未保存时没有当前岗位，Agent 不能按上一岗位继续分析。简历正文不会写入岗位配置文件。
@@ -48,6 +48,8 @@ DSH `0.1.5-rc.2` 的部分间接依赖仍会被包管理器解析到旧版；`pn
 2. 基于用户反馈校正猎聘与 BOSS 的候选人卡片、简历详情和 iframe 选择器，继续实现按平台分离的完整简历字段适配器。当前提取结果是有上限的可见文本，不等于已验证的完整简历结构。第一版不实现消息发送。GoodHR 的对应实现仅作为参考，不把其 Go/CloakBrowser 执行器引入运行时。
 3. 将分析队列扩展为具备稳定候选人关联的队列和可编辑证据的人工复核流程；目前只按简历内容指纹与岗位条件快照保存记录，没有稳定的站点候选人 ID。同名或简历更新都不能自动认定为同一人。人工状态只表示卡片处理进度，不表示技能已确认或已联系候选人。Agent 决策与页面动作保持分离。第一版不追问薪资或求职意向。
 4. 继续验证正式发行链路。当前 macOS 未签名目录包已包含 DSH CLI 和 AgentHR 插件；`verify:package` 检查包内依赖、插件导入、配置合成及 Electron 内置 SQLite，`smoke:host:package` 已从包内 Electron Node 启动 Host 并取得认证后的本地 Agent 页面。`smoke:gui:package` 在隔离的离线模式下验证了 App 主窗口、React 工作台和 preload 桥接。尚未验证 Windows 包、真实网站登录流程、签名和更新机制，因此不能视为正式发行包。
+
+Host 重试只恢复 DSH 服务和 Agent 窗口入口；正在运行的 Agent 任务会中断。DSH 会话内容能否在真实招聘操作中按预期恢复，仍需招聘人员在实际使用流程里验证。
 
 第一版的站内搜索和筛选目前由招聘人员在网站页面操作；Agent 只读取当前可见卡片与已经手动打开的简历。GoodHR5 提供了 BOSS 岗位切换输入框的参考配置，但没有可直接复用的跨站候选人检索动作。站内检索自动化应在两站真实页面结构由用户验证后再接入。
 

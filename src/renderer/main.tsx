@@ -59,6 +59,8 @@ function App() {
       <div className="brand"><span className="brandmark">A</span><span>AgentHR</span><small>招聘工作台 · 技术预览</small></div>
       <div className="top-actions">
         <span className={`runtime ${dshPhase}`}>DSH {dshLabel[dshPhase]}</span>
+        {(dshPhase === 'failed' || dshPhase === 'stopped' || dshPhase === 'unconfigured')
+          && <button className="dsh-button secondary" disabled={busy} onClick={() => void run(() => window.agenthr.restartDsh())}>重试 Agent</button>}
         <button className="dsh-button" disabled={dshPhase !== 'ready'} onClick={() => void run(() => window.agenthr.openDsh())}>打开 Agent ↗</button>
       </div>
     </header>
