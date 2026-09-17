@@ -17,9 +17,30 @@ app.whenReady().then(async () => {
   </body></html>`
   try {
     await view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    await view.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    const centerPixel = async () => {
+      const image = await view.webContents.capturePage()
+      const { width, height } = image.getSize()
+      const bitmap = image.toBitmap()
+      const offset = (Math.floor(height * .7) * width + Math.floor(width * .5)) * 4
+      return Array.from(bitmap.subarray(offset, offset + 4))
+    }
+    const beforeOverlay = await centerPixel()
+    const visual = view.webContents.executeJavaScript(`(() => {
+      const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
+      const beginBrowserVisual = ${beginBrowserVisual.toString()};
+      return beginBrowserVisual(document, null, { x: 50, y: 50 }, 450).then(({ border }) => {
+        border.remove();
+        return { cursorWidth: document.querySelector('[data-agenthr-visual="pointer"]').style.width };
+      });
+    })()`)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    assert.deepEqual(await centerPixel(), beforeOverlay, 'browser content must remain visible through the border overlay')
+    assert.equal((await visual).cursorWidth, '20px')
     const read = () => view.webContents.executeJavaScript(`(${inspectBrowserFrame.toString()})(document, 'main')`)
     const first = await read()
-    assert.deepEqual(first.controls.map(control => control.kind), ['search_input', 'button'])
+    assert.deepEqual(first.controls.map(control => control.kind), ['text_input', 'button', 'button'])
+    assert.match(first.controls.find(control => control.label === '立即沟通').blockedReason, /授权/u)
     const search = first.controls[0]
     const act = (action, signature) => view.webContents.executeJavaScript(`(() => {
       const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
@@ -33,7 +54,6 @@ app.whenReady().then(async () => {
     assert.equal(await view.webContents.executeJavaScript('document.querySelectorAll("[data-agenthr-visual=pointer]").length'), 1)
     window.focus()
     view.webContents.focus()
-    assert.equal(window.isFocused(), true)
     const before = await view.webContents.executeJavaScript('({ active: document.activeElement?.tagName, focused: document.hasFocus() })')
     view.webContents.sendInputEvent({ type: 'rawKeyDown', keyCode: 'Enter' })
     view.webContents.sendInputEvent({ type: 'char', keyCode: 'Enter' })

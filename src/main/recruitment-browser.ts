@@ -1,12 +1,14 @@
-import { WebContentsView, type BrowserWindow, type Rectangle, type WebFrameMain } from 'electron'
-import { createHash, randomBytes } from 'node:crypto'
+import { WebContentsView, type BrowserWindow, type DownloadItem, type Event as ElectronEvent, type Rectangle, type WebFrameMain } from 'electron'
+import { createHash } from 'node:crypto'
 import { PLATFORMS, isRecruitmentUrl, type Platform, type RecruitmentPage } from './platforms.js'
 import { extractLiepinPreviews, extractOpenLiepinResume, parseCandidatePreviews, parseOpenResume, type CandidatePreview, type OpenResume } from './adapters/liepin.js'
 import { extractBossPreviews, extractOpenBossResume, hasSingleVisibleBossFrame } from './adapters/boss.js'
 import { resumeDigest } from './assessments.js'
 import { animateOpenCandidate } from './adapters/candidate-action.js'
-import { actOnBrowserFrame, inspectBrowserFrame, type BrowserFrameSnapshot } from './adapters/browser-use.js'
 import { beginBrowserVisual, restoreBrowserPointer, type PointerPoint } from './adapters/browser-visual.js'
+import { setBrowserControlShield } from './adapters/browser-control.js'
+import { animateBossGreeting } from './adapters/boss-greeting.js'
+import { CdpBrowser } from './cdp-browser.js'
 
 export type { Platform, RecruitmentPage } from './platforms.js'
 
@@ -16,6 +18,9 @@ export interface BrowserStatus {
   title: string
   loading: boolean
   error?: string
+  lastAction?: { action: string; target: string; result: 'running' | 'succeeded' | 'failed'; at: string }
+  /** Present on status exposed to DSH when this is the browser currently selected for Agent actions. */
+  active?: true
 }
 
 /** Electron owns this view; the Agent only receives business operations through adapters. */
@@ -23,10 +28,19 @@ export class RecruitmentBrowser {
   readonly view: WebContentsView
   private status: BrowserStatus
   private disposed = false
+  private humanControl = false
+  private agentInputInFlight = false
+  private readonly cdp: CdpBrowser
   private lastPointer: PointerPoint | null = null
-  private lastSnapshot?: { id: string; url: string; frames: Map<string, WebFrameMain>; frameUrls: Map<string, string>; signatures: Map<string, string> }
+  private downloadHandler?: (event: ElectronEvent, item: DownloadItem) => void
 
-  constructor(private readonly window: BrowserWindow, readonly platform: Platform, private readonly onStatus: (status: BrowserStatus) => void) {
+  constructor(
+    private readonly window: BrowserWindow,
+    readonly platform: Platform,
+    private readonly onStatus: (status: BrowserStatus) => void,
+    private readonly requestDownload?: (fileName: string, sourceUrl: string) => Promise<string | null>,
+    private readonly onDownloadCompleted?: (path: string) => void,
+  ) {
     this.status = { platform, url: '', title: '', loading: false }
     this.view = new WebContentsView({
       webPreferences: {
@@ -35,10 +49,27 @@ export class RecruitmentBrowser {
         contextIsolation: true,
         sandbox: true,
         webSecurity: true,
+        backgroundThrottling: false,
       },
     })
     window.contentView.addChildView(this.view)
     const contents = this.view.webContents
+    this.cdp = new CdpBrowser(contents, url => isRecruitmentUrl(url, this.platform))
+    this.downloadHandler = (_event, item) => {
+      item.pause()
+      void Promise.resolve(this.requestDownload?.(item.getFilename(), item.getURL()) ?? null).then(target => {
+        if (!target || this.disposed) { item.cancel(); return }
+        item.setSavePath(target)
+        item.once('done', (_doneEvent, state) => {
+          if (state === 'completed') this.onDownloadCompleted?.(target)
+        })
+        item.resume()
+      }).catch(() => item.cancel())
+    }
+    contents.session.on('will-download', this.downloadHandler)
+    contents.on('before-input-event', event => {
+      if (!this.humanControl && !this.agentInputInFlight) event.preventDefault()
+    })
     contents.setWindowOpenHandler(({ url }) => {
       this.update({ error: isRecruitmentUrl(url, platform) ? '网站弹窗已拦截；如登录需要弹窗，请记录该步骤。' : '已拦截站外弹窗。' })
       return { action: 'deny' }
@@ -52,6 +83,7 @@ export class RecruitmentBrowser {
     contents.on('did-start-loading', () => this.update({ loading: true, error: undefined }))
     contents.on('did-stop-loading', () => {
       this.update({ loading: false, url: contents.getURL(), title: contents.getTitle() })
+      void this.syncControlShield()
       if (!this.disposed && this.lastPointer && isRecruitmentUrl(contents.getURL(), platform)) {
         void contents.mainFrame.executeJavaScript(`(${restoreBrowserPointer.toString()})(document, ${JSON.stringify(this.lastPointer)})`).catch(() => {})
       }
@@ -71,6 +103,17 @@ export class RecruitmentBrowser {
 
   getStatus(): BrowserStatus { return { ...this.status } }
 
+  private async syncControlShield(): Promise<void> {
+    const contents = this.view.webContents
+    if (this.agentInputInFlight || contents.isDestroyed() || contents.isLoading() || !isRecruitmentUrl(contents.getURL(), this.platform)) return
+    await contents.mainFrame.executeJavaScript(`(${setBrowserControlShield.toString()})(document, ${JSON.stringify(this.humanControl)})`)
+  }
+
+  async setHumanControl(humanControl: boolean): Promise<void> {
+    this.humanControl = humanControl
+    await this.syncControlShield()
+  }
+
   setBounds(bounds: Rectangle): void { this.view.setBounds(bounds) }
 
   async open(page: RecruitmentPage): Promise<void> {
@@ -84,66 +127,46 @@ export class RecruitmentBrowser {
   }
 
   /** Bounded, page-agnostic observation for search results as well as recommendations. */
-  async snapshotPage(): Promise<{ snapshotId: string; platform: Platform; path: string; title: string; frames: BrowserFrameSnapshot[] }> {
+  async snapshotPage() {
     const contents = this.view.webContents
-    const url = contents.getURL()
-    if (!isRecruitmentUrl(url, this.platform) || contents.isLoading()) throw new Error('招聘页面尚未加载完成')
-    const frameMap = new Map<string, WebFrameMain>([['main', contents.mainFrame]])
-    if (this.platform === 'boss') {
-      try { frameMap.set('recommend', await this.getBossRecommendFrame()) } catch { /* not on recommendation page */ }
-    }
-    const frames: BrowserFrameSnapshot[] = []
-    for (const [key, frame] of frameMap) {
-      if (frame.isDestroyed() || !isRecruitmentUrl(frame.url, this.platform)) continue
-      const frameUrl = frame.url
-      const result: unknown = await frame.executeJavaScript(`(${inspectBrowserFrame.toString()})(document, ${JSON.stringify(key)})`)
-      if (frame.isDestroyed() || frame.url !== frameUrl || contents.getURL() !== url || contents.isLoading()) throw new Error('读取时页面发生变化，请重试')
-      if (!result || typeof result !== 'object') throw new Error('无法读取当前页面')
-      const snapshot = result as BrowserFrameSnapshot
-      if (!Array.isArray(snapshot.controls) || typeof snapshot.text !== 'string' || snapshot.text.length > 16_000) throw new Error('页面快照格式无效')
-      frames.push(snapshot)
-    }
-    if (frames.length === 0) throw new Error('当前页面没有可读取的站内内容')
-    const id = randomBytes(12).toString('hex')
-    this.lastSnapshot = { id, url, frames: frameMap,
-      frameUrls: new Map(Array.from(frameMap, ([key, frame]) => [key, frame.url])),
-      signatures: new Map(frames.flatMap(frame => frame.controls.map(control => [control.ref, control.signature]))) }
-    return { snapshotId: id, platform: this.platform, path: new URL(url).pathname, title: contents.getTitle().slice(0, 200), frames }
+    const snapshot = await this.cdp.snapshot()
+    return { ...snapshot, platform: this.platform, path: new URL(contents.getURL()).pathname, title: contents.getTitle().slice(0, 200) }
   }
 
-  async actOnPage(value: unknown): Promise<{ done: boolean; action: string }> {
+  async actOnPage(value: unknown) {
+    if (this.agentInputInFlight) throw new Error('浏览器操作进行中，请等待完成')
     if (!value || typeof value !== 'object') throw new Error('浏览器动作格式无效')
     const input = value as Record<string, unknown>
-    const snapshot = this.lastSnapshot
+    if (!['fill', 'select', 'press_enter', 'click', 'hover', 'scroll_up', 'scroll_down'].includes(String(input.action))) throw new Error('不支持的浏览器动作')
+    if (typeof input.snapshotId !== 'string') throw new Error('缺少页面快照标识')
+    if (['fill', 'select'].includes(String(input.action)) && (typeof input.value !== 'string' || input.value.length > 1000)) throw new Error('输入内容长度无效')
+    if (input.ref !== undefined && typeof input.ref !== 'string') throw new Error('控件引用无效')
+    if (input.frame !== undefined && typeof input.frame !== 'string') throw new Error('框架引用无效')
     const contents = this.view.webContents
-    if (!snapshot || input.snapshotId !== snapshot.id || contents.getURL() !== snapshot.url || contents.isLoading()) throw new Error('页面快照已过期，请重新识别当前页面')
-    if (!['fill', 'press_enter', 'click', 'scroll_up', 'scroll_down'].includes(String(input.action))) throw new Error('不支持的浏览器动作')
-    if (input.action === 'fill' && (typeof input.value !== 'string' || input.value.length < 1 || input.value.length > 200)) throw new Error('搜索词长度无效')
-    const scrolling = input.action === 'scroll_up' || input.action === 'scroll_down'
-    if (!scrolling && (typeof input.ref !== 'string' || !snapshot.signatures.has(input.ref))) throw new Error('元素引用无效，请重新识别页面')
-    const frameKey = scrolling ? 'main' : (input.ref as string).split(':e')[0]
-    const frame = snapshot.frames.get(frameKey)
-    if (!frame || frame.isDestroyed() || frame.url !== snapshot.frameUrls.get(frameKey) || !isRecruitmentUrl(frame.url, this.platform)) throw new Error('页面框架已变化，请重试')
-    const action = scrolling
-      ? { type: 'scroll', direction: input.action === 'scroll_down' ? 'down' : 'up' }
-      : { type: input.action, ref: input.ref, value: input.value }
-    const expected = scrolling ? '' : snapshot.signatures.get(input.ref as string)!
-    const result: unknown = await frame.executeJavaScript(`(() => {
-      const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
-      const beginBrowserVisual = ${beginBrowserVisual.toString()};
-      const inspectBrowserFrame = ${inspectBrowserFrame.toString()};
-      return (${actOnBrowserFrame.toString()})(document, ${JSON.stringify(action)}, ${JSON.stringify(expected)}, 1100, ${JSON.stringify(this.lastPointer)});
-    })()`)
-    if (!result || typeof result !== 'object' || (result as { done?: boolean }).done !== true) throw new Error('页面元素已变化或该动作不可用，请重新识别页面')
-    this.lastPointer = (result as { pointer?: PointerPoint }).pointer ?? this.lastPointer
-    if (input.action === 'press_enter') {
+    const at = new Date().toISOString()
+    const target = String(input.ref || input.frame || '当前页面').slice(0, 120)
+    this.update({ lastAction: { action: String(input.action), target, result: 'running', at } })
+    this.agentInputInFlight = true
+    try {
+      // Native CDP input must reach the page rather than the manual-control shield.
+      await contents.mainFrame.executeJavaScript(`(${setBrowserControlShield.toString()})(document, true)`)
       contents.focus()
-      contents.sendInputEvent({ type: 'rawKeyDown', keyCode: 'Enter' })
-      contents.sendInputEvent({ type: 'char', keyCode: 'Enter' })
-      contents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
+      // A newly shown WebContentsView can have DOM layout before its input surface is ready.
+      // Flush a compositor frame after removing the shield; the image is not stored or sent.
+      await contents.capturePage()
+      const result = await this.cdp.act(input as { snapshotId: string; action: string; ref?: string; value?: string; frame?: string })
+      if (!contents.isDestroyed() && !contents.isLoading()) {
+        await contents.mainFrame.executeJavaScript('new Promise(resolve => { const timer = setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(); })); })')
+      }
+      this.update({ lastAction: { action: String(input.action), target, result: 'succeeded', at } })
+      return result
+    } catch (error) {
+      this.update({ lastAction: { action: String(input.action), target, result: 'failed', at } })
+      throw error
+    } finally {
+      this.agentInputInFlight = false
+      if (!contents.isDestroyed()) await this.syncControlShield().catch(() => {})
     }
-    this.lastSnapshot = undefined
-    return { done: true, action: (result as { action: string }).action }
   }
 
   private async getBossRecommendFrame(): Promise<WebFrameMain> {
@@ -158,6 +181,39 @@ export class RecruitmentBrowser {
     )
     if (frames.length !== 1) throw new Error('没有唯一的 BOSS 推荐页框架')
     return frames[0]
+  }
+
+  private async closeBossDetailIfOpen(): Promise<void> {
+    const frame = await this.getBossRecommendFrame()
+    const selector = "iframe[src*='/web/frame/c-resume/']"
+    const hasDetail = await frame.executeJavaScript(
+      `(${hasSingleVisibleBossFrame.toString()})(document, ${JSON.stringify(selector)})`,
+    )
+    if (hasDetail !== true) return
+    const result: unknown = await frame.executeJavaScript(`(async () => {
+      const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
+      const beginBrowserVisual = ${beginBrowserVisual.toString()};
+      const visible = element => {
+        for (let node = element; node; node = node.parentElement) {
+          const style = document.defaultView?.getComputedStyle?.(node);
+          if (node.hidden || node.getAttribute('aria-hidden') === 'true' || style?.display === 'none' || style?.visibility === 'hidden') return false;
+        }
+        return true;
+      };
+      const buttons = Array.from(document.querySelectorAll('.boss-popup__close, .resume-custom-close')).filter(visible);
+      if (buttons.length !== 1) return { closed: false };
+      const visual = await beginBrowserVisual(document, buttons[0], ${JSON.stringify(this.lastPointer)}, 650);
+      buttons[0].click();
+      return { closed: true, pointer: visual.point };
+    })()`)
+    if (!result || typeof result !== 'object' || (result as { closed?: boolean }).closed !== true) {
+      throw new Error('请先关闭当前候选人详情，再执行打招呼')
+    }
+    this.lastPointer = (result as { pointer?: PointerPoint }).pointer ?? this.lastPointer
+    await new Promise(resolveWait => setTimeout(resolveWait, 250))
+    if (frame.isDestroyed() || await frame.executeJavaScript(
+      `(${hasSingleVisibleBossFrame.toString()})(document, ${JSON.stringify(selector)})`,
+    ) === true) throw new Error('候选人详情未关闭，未执行打招呼')
   }
 
   private checkReadPage(url: string): void {
@@ -192,58 +248,66 @@ export class RecruitmentBrowser {
     const contents = this.view.webContents
     const frame = this.platform === 'boss' ? await this.getBossRecommendFrame() : contents.mainFrame
     const input = { ...matches[0], platform: this.platform }
-    const result: unknown = await frame.executeJavaScript(`(() => {
-      const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
-      const beginBrowserVisual = ${beginBrowserVisual.toString()};
-      return (${animateOpenCandidate.toString()})(document, ${JSON.stringify(input)}, 1100, ${JSON.stringify(this.lastPointer)});
-    })()`)
-    if (!result || typeof result !== 'object' || (result as { opened?: boolean }).opened !== true) {
-      throw new Error('候选人详情入口已变化，请重新读取当前列表')
+    this.update({ lastAction: { action: 'open_candidate', target: matches[0].name.slice(0, 120), result: 'running', at: new Date().toISOString() } })
+    let result: unknown
+    try {
+      result = await frame.executeJavaScript(`(() => {
+        const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
+        const beginBrowserVisual = ${beginBrowserVisual.toString()};
+        return (${animateOpenCandidate.toString()})(document, ${JSON.stringify(input)}, 1100, ${JSON.stringify(this.lastPointer)});
+      })()`)
+      if (!result || typeof result !== 'object' || (result as { opened?: boolean }).opened !== true) throw new Error('候选人详情入口已变化，请重新读取当前列表')
+    } catch (error) {
+      this.update({ lastAction: { action: 'open_candidate', target: matches[0].name.slice(0, 120), result: 'failed', at: new Date().toISOString() } })
+      throw error
     }
     this.lastPointer = (result as { pointer?: PointerPoint }).pointer ?? this.lastPointer
+    this.update({ lastAction: { action: 'open_candidate', target: matches[0].name.slice(0, 120), result: 'succeeded', at: new Date().toISOString() } })
     return { opened: true, name: (result as { name: string }).name }
+  }
+
+  /** Explicit, evidence-gated BOSS greeting. Matching is repeated immediately before the click. */
+  async greetBossCandidate(fingerprint: string): Promise<{ greeted: boolean; alreadyContacted: boolean; name: string }> {
+    if (this.platform !== 'boss') throw new Error('自动打招呼当前仅支持 BOSS 直聘')
+    if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('候选人标识无效')
+    await this.closeBossDetailIfOpen()
+    const candidates = await this.listVisibleCandidates()
+    const matches = candidates.filter(candidate => candidate.fingerprint === fingerprint && candidate.name)
+    if (matches.length !== 1) throw new Error('候选人卡片已变化，请重新读取当前列表')
+    const frame = await this.getBossRecommendFrame()
+    const input = { ...matches[0], platform: 'boss' as const }
+    this.update({ lastAction: { action: 'greet_candidate', target: input.name.slice(0, 120), result: 'running', at: new Date().toISOString() } })
+    let result: unknown
+    try {
+      result = await frame.executeJavaScript(`(() => {
+        const beginBrowserVisual = ${beginBrowserVisual.toString()};
+        return (${animateBossGreeting.toString()})(document, ${JSON.stringify(input)}, 1100, ${JSON.stringify(this.lastPointer)}, beginBrowserVisual);
+      })()`)
+      if (!result || typeof result !== 'object') throw new Error('BOSS 打招呼结果无效')
+      const output = result as { greeted?: boolean; alreadyContacted?: boolean; name?: string; pointer?: PointerPoint }
+      if (output.alreadyContacted !== true && output.greeted !== true) throw new Error('未找到唯一可点击的打招呼按钮，请重新读取候选人')
+      this.lastPointer = output.pointer ?? this.lastPointer
+      this.update({ lastAction: { action: 'greet_candidate', target: input.name.slice(0, 120), result: 'succeeded', at: new Date().toISOString() } })
+      return { greeted: output.greeted === true, alreadyContacted: output.alreadyContacted === true, name: output.name ?? input.name }
+    } catch (error) {
+      this.update({ lastAction: { action: 'greet_candidate', target: input.name.slice(0, 120), result: 'failed', at: new Date().toISOString() } })
+      throw error
+    }
   }
 
   async readOpenResume(): Promise<OpenResume & { sourceDigest: string }> {
     const contents = this.view.webContents
     const url = contents.getURL()
-    if (!isRecruitmentUrl(url, this.platform) || !new URL(url).pathname.includes('recommend')) {
-      throw new Error(`请先在${PLATFORMS[this.platform].name}推荐页手动打开一份简历`)
-    }
+    if (!isRecruitmentUrl(url, this.platform)) throw new Error(`当前页面不属于${PLATFORMS[this.platform].name}`)
     if (contents.isLoading()) throw new Error('页面加载中，请稍后重试')
-    let frame = contents.mainFrame
-    let recommendFrame: WebFrameMain | undefined
-    let extract: (doc: Document) => OpenResume | null = extractOpenLiepinResume
     if (this.platform === 'boss') {
-      const recommend = await this.getBossRecommendFrame()
-      recommendFrame = recommend
-      const hasVisibleDetail: unknown = await recommend.executeJavaScript(
-        `(${hasSingleVisibleBossFrame.toString()})(document, "iframe[src*='/web/frame/c-resume/']")`,
-      )
-      if (hasVisibleDetail !== true) throw new Error('请在 BOSS 推荐页手动打开恰好一份可见简历')
-      const frames = recommend.framesInSubtree.filter(candidate => candidate.parent === recommend
-        && isRecruitmentUrl(candidate.url, 'boss')
-        && new URL(candidate.url).pathname.startsWith('/web/frame/c-resume/')
-        && !candidate.isDestroyed())
-      if (frames.length !== 1) throw new Error('请在 BOSS 推荐页手动打开恰好一份简历')
-      frame = frames[0]
-      extract = extractOpenBossResume
+      const result = await this.cdp.readSingleVisibleDocument(extractOpenBossResume.toString())
+      this.checkReadPage(url)
+      const resume = parseOpenResume(result)
+      return { ...resume, sourceDigest: resumeDigest(resume) }
     }
-    const frameUrl = frame.url
-    const result: unknown = await frame.executeJavaScript(`(${extract.toString()})(document)`)
+    const result = await this.cdp.readSingleVisibleDocument(extractOpenLiepinResume.toString())
     this.checkReadPage(url)
-    if (frame.isDestroyed() || frame.url !== frameUrl) throw new Error('简历框架已变化，请重试')
-    if (recommendFrame) {
-      if (recommendFrame.isDestroyed() || frame.parent !== recommendFrame
-        || await recommendFrame.executeJavaScript(
-          `(${hasSingleVisibleBossFrame.toString()})(document, "iframe[src*='/web/frame/c-resume/']")`,
-        ) !== true
-        || await contents.mainFrame.executeJavaScript(
-          `(${hasSingleVisibleBossFrame.toString()})(document, "iframe[name='recommendFrame']")`,
-        ) !== true) {
-        throw new Error('简历详情已关闭或变化，请重试')
-      }
-    }
     const resume = parseOpenResume(result)
     return { ...resume, sourceDigest: resumeDigest(resume) }
   }
@@ -251,6 +315,8 @@ export class RecruitmentBrowser {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.cdp.dispose()
+    if (this.downloadHandler) this.view.webContents.session.removeListener('will-download', this.downloadHandler)
     this.window.contentView.removeChildView(this.view)
     this.view.webContents.close()
   }

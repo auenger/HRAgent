@@ -52,23 +52,32 @@ try {
     provideCmdline(bootCtx, { args: [], exit: () => {} })
   })
   const presets = await ctx.agentPresets.list()
-  assert.deepEqual(presets.map(preset => preset.id), ['agenthr'])
+  assert.deepEqual(presets.map(preset => preset.id), ['standard', 'ptc', 'minimal', 'cordis', 'agenthr'])
   handle = await ctx.agents.create({
     sessionId: SessionId('agenthr-smoke'),
     setup: agentCtx => ctx.agentPresets.mount(agentCtx).then(() => undefined),
   })
   const names = ctx.tools.schemas(handle.agent).map(tool => tool.name).sort()
   assert.deepEqual(names, [
+    'agenthr_append_task_result',
     'agenthr_browser_action',
     'agenthr_browser_snapshot',
     'agenthr_browser_status',
+    'agenthr_create_task',
     'agenthr_get_job_brief',
+    'agenthr_get_task',
+    'agenthr_get_workspace',
+    'agenthr_greet_qualified_boss_candidate',
+    'agenthr_list_candidates',
+    'agenthr_list_tasks',
     'agenthr_list_visible_candidates',
     'agenthr_open_candidate_preview',
     'agenthr_open_recommendations',
     'agenthr_read_open_resume',
     'agenthr_save_assessment_draft',
     'agenthr_save_job_brief',
+    'agenthr_save_visible_candidates',
+    'agenthr_update_candidate',
   ])
   process.stdout.write(`AgentHR preset exposes exactly ${names.length} recruitment tools to a DSH agent.\n`)
 } finally {

@@ -48,21 +48,21 @@ function parseDraft(value: unknown, resume: OpenResume, brief: JobBrief): Assess
   if (!resume.name.trim()) throw new Error('当前简历缺少可核对的候选人姓名')
   if (!Array.isArray(draft.findings) || draft.findings.length !== brief.criteria.length) throw new Error('每项技能条件都需要一条判断')
   const findings: CriterionFinding[] = draft.findings.map((value, index) => {
-    if (typeof value !== 'object' || value === null) throw new Error('分析条目格式无效')
+    if (typeof value !== 'object' || value === null) throw new Error(`第 ${index + 1} 项分析条目格式无效`)
     const finding = value as Record<string, unknown>
-    if (finding.criterion !== brief.criteria[index]) throw new Error('分析条目与当前岗位技能条件不一致')
-    if (!verdicts.includes(finding.verdict as Verdict)) throw new Error('证据分类无效')
+    if (finding.criterion !== brief.criteria[index]) throw new Error(`第 ${index + 1} 项分析条目与当前岗位技能条件不一致`)
+    if (!verdicts.includes(finding.verdict as Verdict)) throw new Error(`第 ${index + 1} 项证据分类无效`)
     if (typeof finding.evidenceQuote !== 'string' || finding.evidenceQuote.length > 500
       || typeof finding.reasoning !== 'string' || !finding.reasoning.trim() || finding.reasoning.length > 2000
-      || typeof finding.questionDraft !== 'string' || finding.questionDraft.length > 500) throw new Error('分析条目内容无效')
+      || typeof finding.questionDraft !== 'string' || finding.questionDraft.length > 500) throw new Error(`第 ${index + 1} 项分析条目内容无效`)
     const verdict = finding.verdict as Verdict
     const evidenceQuote = finding.evidenceQuote.trim()
     if (/薪资|工资|薪酬|待遇|求职意向|岗位意向|入职意向|salary|compensation|job intent/iu.test(finding.questionDraft)) {
-      throw new Error('第一版问题草稿仅确认岗位技能，不追问薪资或求职意向')
+      throw new Error(`第 ${index + 1} 项问题草稿仅确认岗位技能，不能追问薪资或求职意向`)
     }
-    if (verdict === 'unknown' && evidenceQuote) throw new Error('未知技能不能附会证据')
+    if (verdict === 'unknown' && evidenceQuote) throw new Error(`第 ${index + 1} 项未知技能不能附会证据`)
     if (verdict !== 'unknown' && (!evidenceQuote || !resume.text.includes(evidenceQuote))) {
-      throw new Error('证据原文未出现在当前简历中')
+      throw new Error(`第 ${index + 1} 项证据原文未出现在当前简历中`)
     }
     return { criterion: finding.criterion as string, verdict, evidenceQuote, reasoning: finding.reasoning.trim(), questionDraft: finding.questionDraft.trim() }
   })

@@ -48,3 +48,34 @@ test('resume extraction fails closed when the modal is absent or ambiguous', () 
   assert.throws(() => parseOpenResume(null))
   assert.throws(() => parseOpenResume({ name: '候选人', text: '过短' }))
 })
+
+test('Liepin search-page resume drawer is readable without a recommendation route assumption', () => {
+  const { document } = parseHTML(`
+    <main><p>搜索结果列表背景</p></main>
+    <aside class="resume-detail-drawer">
+      <h2 class="user-name">顾**</h2>
+      <section>求职意向：苏州 生信工程师</section>
+      <section>工作经历：五年生物信息分析经验，使用 Python 与 R。</section>
+      <section>项目经历：负责 RNA-seq 质量控制、序列比对和差异分析。</section>
+      <section>教育经历：生物信息学硕士。</section>
+    </aside>
+  `)
+  const result = extractOpenLiepinResume(document)
+  assert.equal(result.name, '顾**')
+  assert.match(result.text, /RNA-seq/)
+  assert.equal(result.text.includes('搜索结果列表背景'), false)
+})
+
+test('Liepin search detail recovers the displayed name next to the activity marker', () => {
+  const { document } = parseHTML(`
+    <aside class="resume-detail-panel">
+      <div>中文</div><div>EN</div><div>快速定位：</div><div>生物信息</div><div>(12)</div>
+      <div>查看大图</div><div>刘聪</div><div>3天内活跃</div><div>更新简历时间：2026.07.17</div>
+      <section>求职意向：苏州 生物信息工程师</section>
+      <section>工作经历：十年生物信息分析经验。</section>
+      <section>项目经历：负责 RNA-seq 和 WES 分析。</section>
+      <section>教育经历：武汉大学微生物学硕士。</section>
+    </aside>
+  `)
+  assert.equal(extractOpenLiepinResume(document).name, '刘聪')
+})

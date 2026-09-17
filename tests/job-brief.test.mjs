@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { JobBriefStore, parseJobBrief } from '../dist/main/job-brief.js'
 
+const legacyDefaults = { salaryRange: '', location: '', employmentType: 'full_time', status: 'draft', hiringTarget: 1 }
+
 test('multiple job briefs can be created, switched, edited and kept in local configuration', () => {
   const dir = mkdtempSync(join(tmpdir(), 'agenthr-job-brief-'))
   try {
@@ -14,15 +16,20 @@ test('multiple job briefs can be created, switched, edited and kept in local con
     assert.equal(first.role, '动物造模研发')
     assert.equal(first.requirements, '熟悉 tMCAO；MCAO 仅作相关线索。')
     assert.deepEqual(first.criteria, ['熟悉 tMCAO；MCAO 仅作相关线索。'])
-    const second = store.create({ role: '小核酸研发', requirements: 'ASO 项目经验' })
+    const second = store.create({ role: '小核酸研发', requirements: 'ASO 项目经验', salaryRange: '30K-45K', location: '上海', employmentType: 'full_time', status: 'open', hiringTarget: 2 })
     assert.equal(store.list().activeId, second.id)
-    assert.deepEqual(store.load(), { role: second.role, requirements: second.requirements, criteria: ['ASO 项目经验'] })
+    assert.deepEqual(store.load(), { role: second.role, requirements: second.requirements, criteria: ['ASO 项目经验'], salaryRange: '30K-45K', location: '上海', employmentType: 'full_time', status: 'open', hiringTarget: 2 })
+    const versioned = store.save({ role: second.role, requirements: second.requirements, criteria: second.criteria }, second.updatedAt)
+    assert.notEqual(versioned.updatedAt, second.updatedAt)
+    assert.throws(() => store.save({ role: second.role, requirements: '过期覆盖', criteria: second.criteria }, second.updatedAt), /已变化/)
+    assert.equal(store.load().salaryRange, '30K-45K')
+    assert.equal(store.load().status, 'open')
     store.activate(first.id)
     const edited = store.save({ role: first.role, requirements: '动物造模研发背景', criteria: ['独立完成 tMCAO 造模', 'CNS 方向研发经验'] })
     assert.equal(edited.id, first.id)
     assert.equal(store.list().jobs.length, 2)
     assert.equal(store.list().jobs.find(job => job.id === second.id).requirements, 'ASO 项目经验')
-    assert.deepEqual(new JobBriefStore(dir).load(), { role: first.role, requirements: '动物造模研发背景', criteria: ['独立完成 tMCAO 造模', 'CNS 方向研发经验'] })
+    assert.deepEqual(new JobBriefStore(dir).load(), { role: first.role, requirements: '动物造模研发背景', criteria: ['独立完成 tMCAO 造模', 'CNS 方向研发经验'], ...legacyDefaults })
     store.clearActive()
     assert.equal(store.load(), null)
     assert.equal(store.list().jobs.length, 2)
@@ -45,7 +52,7 @@ test('an existing single job brief is migrated into the job list', () => {
   try {
     writeFileSync(join(dir, 'agenthr-job-brief.json'), JSON.stringify({ role: 'CNS 研发', requirements: 'CNS 方向经验' }))
     const store = new JobBriefStore(dir)
-    assert.deepEqual(store.load(), { role: 'CNS 研发', requirements: 'CNS 方向经验', criteria: ['CNS 方向经验'] })
+    assert.deepEqual(store.load(), { role: 'CNS 研发', requirements: 'CNS 方向经验', criteria: ['CNS 方向经验'], ...legacyDefaults })
     const jobs = store.list()
     assert.equal(jobs.jobs.length, 1)
     assert.equal(jobs.activeId, jobs.jobs[0].id)
@@ -63,7 +70,7 @@ test('a saved job list without criteria gains one legacy criterion per job', () 
       version: 1, activeId: id,
       jobs: [{ id, role: 'ASO 研发', requirements: '小核酸项目经验', updatedAt: '2026-01-01T00:00:00.000Z' }],
     }))
-    assert.deepEqual(new JobBriefStore(dir).load(), { role: 'ASO 研发', requirements: '小核酸项目经验', criteria: ['小核酸项目经验'] })
+    assert.deepEqual(new JobBriefStore(dir).load(), { role: 'ASO 研发', requirements: '小核酸项目经验', criteria: ['小核酸项目经验'], ...legacyDefaults })
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -6,8 +6,8 @@ export function restoreBrowserPointer(doc: Document, point: PointerPoint): HTMLE
   if (!pointer) {
     pointer = doc.createElement('div')
     pointer.setAttribute('data-agenthr-visual', 'pointer')
-    pointer.style.cssText = 'position:fixed;left:0;top:0;width:32px;height:40px;z-index:2147483647;pointer-events:none;transition:transform 1.05s cubic-bezier(.22,.7,.18,1);filter:drop-shadow(0 0 7px rgba(98,202,255,.95)) drop-shadow(0 0 15px rgba(178,124,255,.75));'
-    pointer.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="40" viewBox="0 0 32 40" aria-hidden="true"><defs><linearGradient id="agenthr-cursor-gradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#70dcff"/><stop offset=".55" stop-color="#a88fff"/><stop offset="1" stop-color="#f3a6dc"/></linearGradient></defs><path d="M4 3 L4 31 L11 24 L16 36 L21 34 L16 22 L27 22 Z" fill="#f9fbff" stroke="url(#agenthr-cursor-gradient)" stroke-width="2.4" stroke-linejoin="round"/></svg>'
+    pointer.style.cssText = 'position:fixed;left:0;top:0;width:20px;height:28px;z-index:2147483647;pointer-events:none;transition:transform 1.05s cubic-bezier(.22,.7,.18,1);filter:drop-shadow(0 0 4px rgba(98,202,255,.75)) drop-shadow(0 0 9px rgba(178,124,255,.5));'
+    pointer.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="28" viewBox="0 0 20 28" aria-hidden="true"><defs><linearGradient id="agenthr-cursor-gradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#70dcff"/><stop offset=".55" stop-color="#a88fff"/><stop offset="1" stop-color="#f3a6dc"/></linearGradient></defs><path d="M3.5 2.5 Q2.5 2 2.5 3.5 L2.5 21 Q2.5 22.5 3.8 21.5 L8.3 17.3 L12.2 25 Q12.7 26 13.7 25.5 L15.5 24.6 Q16.5 24.2 16 23.2 L12.2 16.5 L18 16.5 Q19.4 16.5 18.3 15.5 Z" fill="#20242b" stroke="url(#agenthr-cursor-gradient)" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>'
     doc.body.append(pointer)
   }
   pointer.style.transform = `translate(${Math.round(point.x)}px, ${Math.round(point.y)}px)`
@@ -20,7 +20,7 @@ export async function beginBrowserVisual(doc: Document, target: HTMLElement | nu
   const pointer = restoreBrowserPointer(doc, first)
   const border = doc.createElement('div')
   border.setAttribute('data-agenthr-visual', 'border')
-  border.style.cssText = 'position:fixed;inset:7px;border:2px solid transparent;border-radius:14px;background:linear-gradient(transparent,transparent) padding-box,linear-gradient(135deg,#70dcff,#ae95ff,#efa9dc,#70dcff) border-box;box-shadow:0 0 24px rgba(101,190,255,.36),0 0 42px rgba(177,120,255,.22),inset 0 0 28px rgba(132,149,255,.17);z-index:2147483646;pointer-events:none;opacity:.85;'
+  border.style.cssText = 'position:fixed;inset:7px;border-radius:14px;background:linear-gradient(90deg,#70dcff,#ae95ff,#efa9dc) top/100% 2px no-repeat,linear-gradient(90deg,#efa9dc,#ae95ff,#70dcff) bottom/100% 2px no-repeat,linear-gradient(180deg,#70dcff,#ae95ff) left/2px 100% no-repeat,linear-gradient(180deg,#efa9dc,#70dcff) right/2px 100% no-repeat;box-shadow:0 0 18px rgba(101,190,255,.32),0 0 34px rgba(177,120,255,.18);z-index:2147483646;pointer-events:none;opacity:.9;'
   doc.body.append(border)
   target?.scrollIntoView?.({ block: 'center', behavior: 'auto' })
   const rect = target?.getBoundingClientRect?.()

@@ -55,18 +55,46 @@ export function parseCandidatePreviews(value: unknown): CandidatePreview[] {
   })
 }
 
-/** Read only the one visible Liepin resume modal; never click or choose a candidate. */
+/** Read the visible Liepin resume panel on search or recommendation pages; never click or choose a candidate. */
 export function extractOpenLiepinResume(doc: Document): OpenResume | null {
-  const modals = Array.from(doc.querySelectorAll<HTMLElement>('.ant-lpt-modal')).filter(modal => {
-    if (modal.getAttribute('aria-hidden') === 'true' || modal.hasAttribute('hidden')) return false
-    const view = doc.defaultView
-    const style = view?.getComputedStyle?.(modal)
-    return style?.display !== 'none' && style?.visibility !== 'hidden'
+  const visible = (element: HTMLElement): boolean => {
+    for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+      const style = doc.defaultView?.getComputedStyle?.(node)
+      if (node.hasAttribute('hidden') || node.getAttribute('aria-hidden') === 'true'
+        || style?.display === 'none' || style?.visibility === 'hidden') return false
+    }
+    return true
+  }
+  const selector = [
+    '.ant-lpt-modal', '.ant-lpt-drawer-content', '.ant-drawer-content', '[role="dialog"]',
+    '[class*="resume-detail"]', '[class*="resumeDetail"]', '[class*="resume-preview"]', '[class*="resumePreview"]',
+  ].join(', ')
+  const panels = Array.from(new Set<HTMLElement>(Array.from(doc.querySelectorAll<HTMLElement>(selector)))).filter(panel => {
+    if (!visible(panel)) return false
+    const text = (panel.innerText || panel.textContent || '').replace(/\s+/gu, ' ').trim()
+    const evidenceMarkers = text.match(/工作经历|工作经验|项目经历|教育经历|求职意向|个人优势|专业技能|技能标签/gu)?.length ?? 0
+    return panel.matches('.ant-lpt-modal') ? text.length >= 20 : text.length >= 80 && evidenceMarkers >= 2
   })
-  if (modals.length !== 1) return null
-  const modal = modals[0]
-  const name = (modal.querySelector('.nest-resume-personal-name')?.textContent ?? '').replace(/\s+/gu, ' ').trim().slice(0, 120)
-  const text = (modal.innerText || modal.textContent || '').replace(/\r/gu, '').replace(/[ \t]+/gu, ' ').replace(/\n{3,}/gu, '\n\n').trim().slice(0, 20_000)
+  if (panels.length === 0) return null
+  // Several selectors can describe nested parts of the same drawer. The largest visible
+  // evidence-bearing panel is the complete resume; two disjoint panels remain ambiguous.
+  const ordered = panels.sort((left, right) => (right.innerText || right.textContent || '').length - (left.innerText || left.textContent || '').length)
+  const panel = ordered[0]
+  if (ordered.slice(1).some(candidate => !panel.contains(candidate) && !candidate.contains(panel))) return null
+  const rawText = (panel.innerText || panel.textContent || '').replace(/\r/gu, '')
+  let name = (panel.querySelector('.nest-resume-personal-name, .resume-name, [class*="resume-name"], [class*="user-name"], [class*="userName"], [class*="candidate-name"], [class*="candidateName"]')?.textContent ?? '')
+    .replace(/\s+/gu, ' ').trim().slice(0, 120)
+  if (!name) {
+    const lines = rawText.split('\n').map(line => line.replace(/\s+/gu, ' ').trim()).filter(Boolean)
+    const marker = lines.findIndex(line => /(?:\d+天内活跃|刚刚活跃|今日活跃|本周活跃|更新简历时间)/u.test(line))
+    if (marker > 0) {
+      const excluded = /^(?:中文|EN|快速定位[:：]?|查看大图|展开|收起|求职意向|工作经历|教育经历|项目经历|附件简历)$/iu
+      name = lines.slice(Math.max(0, marker - 10), marker).reverse().find(line =>
+        line.length <= 40 && !excluded.test(line) && !/^\(?\d+\)?$/u.test(line) && !/[：:]$/u.test(line),
+      )?.slice(0, 120) ?? ''
+    }
+  }
+  const text = rawText.replace(/[ \t]+/gu, ' ').replace(/\n{3,}/gu, '\n\n').trim().slice(0, 20_000)
   if (text.length < 20) return null
   return { name, text }
 }

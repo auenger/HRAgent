@@ -5,11 +5,13 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import type { BridgeAddress } from './bridge.js'
 import { prepareDshProfile } from './dsh-profile.js'
+import { bindDshWorkspace } from './dsh-workspace.js'
 
 export interface DshStatus {
   phase: 'unconfigured' | 'starting' | 'ready' | 'stopped' | 'failed'
   url?: string
   detail?: string
+  workspacePath?: string
 }
 
 /** DSH Web prints a one-use launch URL; opening the bare origin misses its auth cookie. */
@@ -56,7 +58,7 @@ export class DshHost {
   private generation = 0
   private restartTask?: Promise<void>
 
-  constructor(private readonly userData: string, private readonly bridge: BridgeAddress, private readonly onStatus: (status: DshStatus) => void) {}
+  constructor(private readonly userData: string, private readonly bridge: BridgeAddress, private readonly onStatus: (status: DshStatus) => void, private workspaceDirectory = process.cwd()) {}
 
   getStatus(): DshStatus { return { ...this.state } }
 
@@ -70,7 +72,7 @@ export class DshHost {
     if (this.child || this.state.phase === 'starting') return
     const generation = ++this.generation
     this.stopping = false
-    this.update({ phase: 'starting', detail: '正在启动 DSH Host…' })
+    this.update({ phase: 'starting', detail: '正在启动 DSH Host…', workspacePath: this.workspaceDirectory })
     try {
       const cli = resolveDshCli()
       if (!cli) {
@@ -81,17 +83,18 @@ export class DshHost {
       if (generation !== this.generation || this.closed) return
       const home = resolve(this.userData, 'dsh')
       mkdirSync(home, { recursive: true })
+      bindDshWorkspace(home, this.workspaceDirectory)
       const plugin = resolve(import.meta.dirname, '../plugin/index.js')
       if (!existsSync(plugin)) throw new Error(`AgentHR DSH plugin missing: ${plugin}`)
       const patch = prepareDshProfile(home, plugin)
       const node = process.env.AGENTHR_NODE_BIN || process.execPath
       const runAsNode = node === process.execPath && Boolean(process.versions.electron)
       const child = spawn(node, [cli, 'web', '--patch', patch, '--no-open', '--host', '127.0.0.1', '--port', String(port)], {
-        cwd: dirname(cli),
+        cwd: this.workspaceDirectory,
         env: {
           ...process.env,
           ...(runAsNode ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
-          DSH_HOME: home, AGENTHR_BRIDGE_URL: this.bridge.url, AGENTHR_BRIDGE_TOKEN: this.bridge.token,
+          DSH_HOME: home, AGENTHR_WORKSPACE_DIR: this.workspaceDirectory, AGENTHR_BRIDGE_URL: this.bridge.url, AGENTHR_BRIDGE_TOKEN: this.bridge.token,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -102,7 +105,7 @@ export class DshHost {
         if (generation !== this.generation || this.child !== child || this.stopping) return
         stdoutTail = (stdoutTail + data).slice(-4000)
         const url = parseDshReadyUrl(stdoutTail, port)
-        if (url && this.state.phase !== 'ready') this.update({ phase: 'ready', url })
+        if (url && this.state.phase !== 'ready') this.update({ phase: 'ready', url, workspacePath: this.workspaceDirectory })
       })
       child.stderr.resume()
       child.on('error', error => {
@@ -139,6 +142,12 @@ export class DshHost {
     const task = (async () => { await this.stop(); if (!this.closed) await this.start() })()
     this.restartTask = task
     try { await task } finally { if (this.restartTask === task) this.restartTask = undefined }
+  }
+
+  async setWorkspaceDirectory(path: string): Promise<void> {
+    if (path === this.workspaceDirectory) return
+    this.workspaceDirectory = path
+    await this.restart()
   }
 
   async shutdown(): Promise<void> {
