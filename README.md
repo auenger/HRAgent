@@ -92,3 +92,5 @@ DSH `0.1.5-rc.2` 的部分间接依赖仍会被包管理器解析到旧版；`pn
 ## License
 
 本项目采用 [MIT License](./LICENSE)。
+
+维护者：yzw · [yzw@imcoders.net](mailto:yzw@imcoders.net)
