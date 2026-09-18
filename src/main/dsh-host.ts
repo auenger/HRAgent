@@ -100,6 +100,7 @@ export class DshHost {
       })
       this.child = child
       let stdoutTail = ''
+      let stderrTail = ''
       child.stdout.setEncoding('utf8')
       child.stdout.on('data', (data: string) => {
         if (generation !== this.generation || this.child !== child || this.stopping) return
@@ -107,13 +108,17 @@ export class DshHost {
         const url = parseDshReadyUrl(stdoutTail, port)
         if (url && this.state.phase !== 'ready') this.update({ phase: 'ready', url, workspacePath: this.workspaceDirectory })
       })
-      child.stderr.resume()
+      child.stderr.setEncoding('utf8')
+      child.stderr.on('data', (data: string) => { stderrTail = (stderrTail + data).slice(-8000) })
       child.on('error', error => {
         if (generation === this.generation && !this.stopping) this.update({ phase: 'failed', detail: error.message })
       })
       child.on('exit', code => {
         if (this.child === child) this.child = undefined
-        if (generation === this.generation && !this.stopping) this.update({ phase: 'failed', detail: `DSH Host 已退出 (${code})。` })
+        if (generation === this.generation && !this.stopping) {
+          const diagnostic = stderrTail.trim().slice(-1600)
+          this.update({ phase: 'failed', detail: diagnostic ? `DSH Host 已退出 (${code})。${diagnostic}` : `DSH Host 已退出 (${code})。` })
+        }
       })
     } catch (error) {
       if (generation === this.generation) this.update({ phase: 'failed', detail: error instanceof Error ? error.message : String(error) })

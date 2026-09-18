@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const layouts = {
@@ -22,6 +22,15 @@ const profileModule = join(appRoot, 'dist/main/dsh-profile.js')
 const assessmentModule = join(appRoot, 'dist/main/assessments.js')
 const plugin = join(appRoot, 'dist/plugin/index.js')
 const temporary = mkdtempSync(join(tmpdir(), 'agenthr-packaged-runtime-'))
+const runtimePackages = [
+  '@deepseek-ai/cordis-plugin-group', '@deepseek-ai/dsh-anonymous-user-id', '@deepseek-ai/dsh-attachment',
+  '@deepseek-ai/dsh-authorization', '@deepseek-ai/dsh-bash-local', '@deepseek-ai/dsh-code-runtime',
+  '@deepseek-ai/dsh-compaction', '@deepseek-ai/dsh-fs', '@deepseek-ai/dsh-jobs', '@deepseek-ai/dsh-output-retention',
+  '@deepseek-ai/dsh-sandbox', '@deepseek-ai/dsh-session-persistence', '@deepseek-ai/dsh-session-query',
+  '@deepseek-ai/dsh-session-telemetry', '@deepseek-ai/dsh-session-title-llm', '@deepseek-ai/dsh-settings',
+  '@deepseek-ai/dsh-shell', '@deepseek-ai/dsh-spill', '@deepseek-ai/dsh-subagent-in-process-driver',
+  '@deepseek-ai/dsh-util-time', '@deepseek-ai/dsh-workflow',
+]
 
 function run(args) {
   const result = spawnSync(executable, args, {
@@ -35,6 +44,16 @@ function run(args) {
 }
 
 try {
+  const appManifest = JSON.parse(readFileSync(join(appRoot, 'package.json'), 'utf8'))
+  const appModules = realpathSync(join(appRoot, 'node_modules'))
+  for (const name of runtimePackages) {
+    const manifest = join(appModules, name, 'package.json')
+    const expected = appManifest.dependencies?.[name]
+    if (!expected || !existsSync(manifest)) throw new Error(`Packaged runtime dependency is missing: ${name}`)
+    const actual = JSON.parse(readFileSync(manifest, 'utf8')).version
+    if (actual !== expected) throw new Error(`Packaged runtime dependency version mismatch: ${name} ${actual} != ${expected}`)
+  }
+
   const inspect = [
     'const host = await import(process.argv[1]);',
     'const plugin = await import(process.argv[2]);',
@@ -53,6 +72,14 @@ try {
   const config = run([cli, '--profile', 'web', '--patch', patch, '--dump-config'])
   if (!config.includes('agenthr-browser-tools') || !config.includes('default: agenthr') || !config.includes('includeShippedRoot: false')) {
     throw new Error('Packaged DSH did not load the isolated AgentHR preset and plugin')
+  }
+  for (const name of runtimePackages) {
+    const profilePackage = join(temporary, 'profiles', 'node_modules', name)
+    if (!existsSync(profilePackage)) continue
+    const target = realpathSync(profilePackage)
+    if (target !== appModules && !target.startsWith(`${appModules}${sep}`)) {
+      throw new Error(`Packaged DSH profile escaped bundled dependencies: ${name} -> ${target}`)
+    }
   }
   process.stdout.write(`Packaged DSH ${version}, AgentHR plugin, and SQLite verified without starting the app.\n`)
 } finally {
