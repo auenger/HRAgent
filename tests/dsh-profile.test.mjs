@@ -21,7 +21,9 @@ test('current DSH accepts AgentHR default plus shipped and user presets', () => 
     assert.match(persona, /active=true 的平台是当前操作目标/u)
     assert.match(persona, /不得切换平台/u)
     assert.match(persona, /不得声称 AgentHR 只支持推荐页/u)
-    assert.doesNotMatch(persona, /tool-bash|tool-fs/)
+    assert.match(persona, /tool-bash/)
+    assert.match(persona, /tool-fs/)
+    assert.match(persona, /tool-fs-search/)
     const result = spawnSync(process.execPath, [cli, '--profile', 'web', '--patch', patch, '--dump-config'], {
       encoding: 'utf8', timeout: 30_000,
       env: { ...process.env, DSH_HOME: home },

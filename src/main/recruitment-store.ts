@@ -9,6 +9,83 @@ export type CandidateStage = 'lead' | 'screening' | 'interview' | 'offer' | 'hir
 export type TaskType = 'search' | 'analyze' | 'confirm' | 'follow_up'
 export type TaskStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
 export type TaskEntryKind = 'analysis' | 'browser_result' | 'note'
+export type RecruitmentSkillStatus = 'draft' | 'enabled' | 'disabled' | 'needs_repair'
+export type RecruitmentSkillExecutionMode = 'agent_guided' | 'deterministic'
+export type RecruitmentSkillCategory = 'general' | 'boss' | 'liepin'
+
+export interface RecruitmentSkillParameter {
+  key: string
+  label: string
+  description: string
+  type: 'text' | 'number' | 'boolean'
+  required: boolean
+  defaultValue: string | number | boolean
+}
+
+export interface RecruitmentSkillStep { id: string; title: string; description: string; verification: string }
+export interface RecruitmentSkillDefinition {
+  taskType: TaskType
+  parameters: RecruitmentSkillParameter[]
+  steps: RecruitmentSkillStep[]
+  permissions: string[]
+  successCriteria: string[]
+  failureStrategy: string
+}
+
+export interface RecruitmentSkill {
+  id: string
+  key: string
+  name: string
+  description: string
+  category: RecruitmentSkillCategory
+  platform: Platform | null
+  status: RecruitmentSkillStatus
+  activeVersion: number
+  executionMode: RecruitmentSkillExecutionMode
+  riskLevel: 'read_only' | 'local_write' | 'external_action'
+  definition: RecruitmentSkillDefinition
+  runCount: number
+  successCount: number
+  sourceTaskCount: number
+  consecutiveFailures: number
+  lastRunAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RecruitmentSkillRun {
+  id: string
+  skillId: string
+  version: number
+  taskId: string
+  status: 'running' | 'completed' | 'failed'
+  parameters: Record<string, string | number | boolean>
+  resultSummary: string
+  startedAt: string
+  finishedAt: string | null
+}
+
+export type RecruitmentSkillStepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+export interface RecruitmentSkillRunStep {
+  id: string
+  runId: string
+  stepId: string
+  stepIndex: number
+  title: string
+  status: RecruitmentSkillStepStatus
+  evidence: string
+  errorCode: string | null
+  errorMessage: string | null
+  startedAt: string | null
+  finishedAt: string | null
+}
+
+export interface SkillStepUpdateResult {
+  run: RecruitmentSkillRun
+  steps: RecruitmentSkillRunStep[]
+  fallbackRequired: boolean
+  fallbackPrompt: string | null
+}
 
 export interface CandidateRecord {
   id: string
@@ -61,12 +138,18 @@ export interface TaskEntry {
 }
 
 export interface TaskFile { path: string; kind: 'input' | 'output'; createdAt: string }
-export interface RecruitmentTaskDetail { task: RecruitmentTask; entries: TaskEntry[]; files: TaskFile[] }
+export interface RecruitmentTaskDetail {
+  task: RecruitmentTask
+  entries: TaskEntry[]
+  files: TaskFile[]
+  skillRun?: RecruitmentSkillRun
+  skillSteps?: RecruitmentSkillRunStep[]
+}
 
 export interface RecruitmentEvent {
   id: string
   type: string
-  entityType: 'job' | 'candidate' | 'application' | 'task' | 'assessment'
+  entityType: 'job' | 'candidate' | 'application' | 'task' | 'assessment' | 'skill'
   entityId: string
   summary: string
   createdAt: string
@@ -104,6 +187,110 @@ function assertUuid(value: unknown, label: string): asserts value is string {
 function nextTimestamp(...previous: string[]): string {
   const latest = Math.max(0, ...previous.map(value => Date.parse(value)).filter(Number.isFinite))
   return new Date(Math.max(Date.now(), latest + 1)).toISOString()
+}
+
+const BUILTIN_SKILLS: Array<Omit<RecruitmentSkill, 'id' | 'activeVersion' | 'runCount' | 'successCount' | 'sourceTaskCount' | 'consecutiveFailures' | 'lastRunAt' | 'createdAt' | 'updatedAt'>> = [
+  {
+    key: 'liepin-search-and-save', name: '猎聘搜索并保存候选人', category: 'liepin', platform: 'liepin', status: 'enabled', executionMode: 'agent_guided', riskLevel: 'local_write',
+    description: '按当前岗位、关键词和城市搜索候选人，读取限定数量的简历并保存到人才库。',
+    definition: {
+      taskType: 'search',
+      parameters: [
+        { key: 'keyword', label: '搜索关键词', description: '用于猎聘人才搜索的岗位或技能关键词。', type: 'text', required: true, defaultValue: '' },
+        { key: 'city', label: '目前城市', description: '筛选候选人的当前所在城市。', type: 'text', required: true, defaultValue: '' },
+        { key: 'maxCandidates', label: '最多读取人数', description: '本次最多打开并分析的候选人数。', type: 'number', required: true, defaultValue: 10 },
+        { key: 'minimumExperienceYears', label: '最低工作年限', description: '卡片明确不足该年限时跳过详情。', type: 'number', required: false, defaultValue: 0 },
+      ],
+      steps: [
+        { id: 'check-context', title: '检查岗位与平台', description: '确认当前岗位存在、猎聘已登录并由 Agent 控制。', verification: '当前岗位和活跃平台均与技能要求一致。' },
+        { id: 'search', title: '设置搜索条件', description: '进入搜索人才页，填写关键词并选择目前城市。', verification: '关键词输入值和城市条件标签与参数一致。' },
+        { id: 'read', title: '读取候选人', description: '按上限逐个打开符合基础条件的候选人详情。', verification: '任一时刻恰好只有一份可见简历详情。' },
+        { id: 'save', title: '保存人才资料', description: '提取姓名、公司、职位、所在地、期望职位和薪资并关联当前岗位。', verification: '人才库记录字段通过姓名与完整度校验。' },
+      ],
+      permissions: ['读取招聘网站页面', '读取可见简历详情', '写入本地人才库', '禁止联系候选人', '禁止下载附件'],
+      successCriteria: ['搜索关键词和城市筛选已生效', '保存人数不超过参数上限', '姓名不得为活跃状态文案', '每条记录关联当前岗位和猎聘来源'],
+      failureStrategy: '任一步骤的语义目标或结果校验失败时停止确定性动作，保留断点并交回 Agent 诊断。',
+    },
+  },
+  {
+    key: 'boss-recommend-and-save', name: 'BOSS 推荐页读取并保存候选人', category: 'boss', platform: 'boss', status: 'enabled', executionMode: 'agent_guided', riskLevel: 'local_write',
+    description: '读取 BOSS 直聘当前推荐列表中的候选人线索，逐一核对详情并保存到当前岗位人才库。',
+    definition: {
+      taskType: 'search',
+      parameters: [
+        { key: 'maxCandidates', label: '最多读取人数', description: '本次最多打开并保存的候选人数。', type: 'number', required: true, defaultValue: 10 },
+        { key: 'minimumExperienceYears', label: '最低工作年限', description: '卡片明确不足该年限时跳过详情。', type: 'number', required: false, defaultValue: 0 },
+      ],
+      steps: [
+        { id: 'check-boss', title: '检查 BOSS 页面', description: '确认 BOSS 直聘已登录，当前推荐列表可见且由 Agent 控制。', verification: '活跃平台为 BOSS，列表存在可见候选人卡片。' },
+        { id: 'collect-cards', title: '读取推荐线索', description: '读取当前页面的候选人卡片并应用基础工作年限条件。', verification: '只使用当前可见卡片，人数不超过参数上限。' },
+        { id: 'read-details', title: '逐一读取详情', description: '打开候选人详情，确认只有一份可见简历后提取结构化字段。', verification: '姓名可信，详情与选中的候选人卡片一致。' },
+        { id: 'save-boss', title: '保存到人才库', description: '将人才资料关联当前岗位和 BOSS 来源后保存。', verification: '重新读取人才库后字段和来源关联正确。' },
+      ],
+      permissions: ['读取 BOSS 推荐页', '读取可见简历详情', '写入本地人才库', '禁止自动打招呼', '禁止发送消息', '禁止下载附件'],
+      successCriteria: ['保存人数不超过参数上限', '姓名不得为活跃状态文案', '每条记录关联当前岗位和 BOSS 来源', '未向候选人发起沟通'],
+      failureStrategy: '卡片、详情或平台状态变化时停止当前动作，重新读取页面；无法确认候选人身份时不保存并交回 Agent。',
+    },
+  },
+  {
+    key: 'read-and-save-open-resume', name: '读取当前简历并补全人才资料', category: 'general', platform: null, status: 'enabled', executionMode: 'agent_guided', riskLevel: 'local_write',
+    description: '读取当前唯一可见的猎聘或 BOSS 简历，提取结构化字段并补全人才库记录。',
+    definition: {
+      taskType: 'analyze', parameters: [],
+      steps: [
+        { id: 'single-detail', title: '确认当前简历', description: '检查当前页面只有一份可见简历详情。', verification: '可见详情数量严格等于一。' },
+        { id: 'extract-profile', title: '提取人才字段', description: '读取姓名、公司、职位、所在地、期望职位和期望薪资。', verification: '姓名不是在线、今天活跃等状态文案。' },
+        { id: 'persist-profile', title: '保存人才资料', description: '关联当前岗位和来源平台，写入人才库。', verification: '重新读取人才库后字段与页面证据一致。' },
+      ],
+      permissions: ['读取可见简历详情', '写入本地人才库', '禁止联系候选人', '禁止下载附件'],
+      successCriteria: ['姓名通过可信格式校验', '结构化字段按页面证据保存', '候选人关联当前岗位和来源平台'],
+      failureStrategy: '详情缺失、存在多份详情或姓名不可信时停止保存并请求用户核对页面。',
+    },
+  },
+  {
+    key: 'analyze-open-resume', name: '按岗位逐项分析当前简历', category: 'general', platform: null, status: 'enabled', executionMode: 'agent_guided', riskLevel: 'local_write',
+    description: '依据当前岗位条件逐项引用简历证据，生成等待招聘人员复核的分析草稿。',
+    definition: {
+      taskType: 'analyze', parameters: [],
+      steps: [
+        { id: 'read-job', title: '读取岗位版本', description: '读取当前岗位和逐项技能条件。', verification: '保存岗位指纹用于提交前复核。' },
+        { id: 'read-resume', title: '读取当前简历', description: '读取当前唯一可见简历并生成内容指纹。', verification: '提交前简历指纹保持一致。' },
+        { id: 'assess', title: '逐项分析证据', description: '对每项要求区分明确证据、相关线索、未知和明确不符。', verification: '每项岗位条件恰好对应一条结论，引用原文确实存在。' },
+        { id: 'save-draft', title: '保存分析草稿', description: '保存草稿并等待招聘人员人工复核。', verification: '草稿未触发任何对外沟通。' },
+      ],
+      permissions: ['读取当前岗位', '读取可见简历详情', '写入本地分析草稿', '禁止联系候选人'],
+      successCriteria: ['岗位与简历指纹未变化', '每项条件都有结论', '证据引用来自简历原文', '结果保持待人工复核'],
+      failureStrategy: '岗位或简历变化时放弃旧草稿，重新读取后再分析。',
+    },
+  },
+]
+
+const LEARNED_STEP_LIBRARY: Record<string, RecruitmentSkillStep> = {
+  context: { id: 'check-context', title: '检查执行上下文', description: '确认当前岗位、平台和任务输入仍然有效。', verification: '岗位、平台与任务要求一致。' },
+  search: { id: 'search', title: '搜索与筛选', description: '按任务条件搜索并应用页面筛选。', verification: '搜索词和筛选标签与任务输入一致。' },
+  read: { id: 'read', title: '读取页面或简历', description: '读取当前可见结果和所需详情。', verification: '读取对象与当前任务目标一致。' },
+  analyze: { id: 'analyze', title: '分析并形成证据', description: '基于可见信息完成结构化分析。', verification: '结论可追溯到任务条目或页面证据。' },
+  save: { id: 'save', title: '保存结构化结果', description: '将确认后的结果写入 AgentHR 或工作目录。', verification: '重新读取后字段或文件存在且内容一致。' },
+  report: { id: 'report', title: '生成报告', description: '汇总证据并生成任务要求的报告。', verification: '报告路径已关联任务且内容可读取。' },
+  contact: { id: 'contact', title: '执行外部沟通', description: '按授权向候选人发送消息或打招呼。', verification: '发送对象、内容和回执均已记录。' },
+}
+
+function canonicalOperations(text: string): string[] {
+  const rules: Array<[string, RegExp]> = [
+    ['context', /岗位|上下文|登录|平台/u],
+    ['search', /搜索|检索|筛选|关键词|推荐页/u],
+    ['read', /读取|查看|打开|简历|候选人|页面/u],
+    ['analyze', /分析|评估|匹配|证据|结论/u],
+    ['save', /保存|写入|人才库|落盘|关联/u],
+    ['report', /报告|汇总|导出|markdown|\.md\b/iu],
+    ['contact', /打招呼|发送消息|联系候选人|沟通/u],
+  ]
+  const found = rules.filter(([, pattern]) => pattern.test(text)).map(([key]) => key)
+  return found.length ? found : ['context', 'analyze']
+}
+
+function skillFingerprint(platform: Platform | null, taskType: TaskType, operations: string[]): string {
+  return createHash('sha256').update(JSON.stringify([platform ?? 'general', taskType, [...new Set(operations)].sort()])).digest('hex')
 }
 
 /** Owns durable recruiting objects. Platform sources never merge across candidates by name. */
@@ -166,6 +353,37 @@ export class RecruitmentStore {
         result TEXT NOT NULL, created_at TEXT NOT NULL,
         UNIQUE(job_id, platform, source_digest)
       );
+      CREATE TABLE IF NOT EXISTS recruitment_skills (
+        id TEXT PRIMARY KEY, skill_key TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'general', platform TEXT, status TEXT NOT NULL, active_version INTEGER NOT NULL, execution_mode TEXT NOT NULL,
+        risk_level TEXT NOT NULL, run_count INTEGER NOT NULL DEFAULT 0, success_count INTEGER NOT NULL DEFAULT 0,
+        last_run_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        origin TEXT NOT NULL DEFAULT 'builtin', fingerprint TEXT,
+        source_task_count INTEGER NOT NULL DEFAULT 0, consecutive_failures INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS recruitment_skill_versions (
+        id TEXT PRIMARY KEY, skill_id TEXT NOT NULL REFERENCES recruitment_skills(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL, definition_json TEXT NOT NULL, change_summary TEXT NOT NULL, created_at TEXT NOT NULL,
+        UNIQUE(skill_id, version)
+      );
+      CREATE TABLE IF NOT EXISTS recruitment_skill_runs (
+        id TEXT PRIMARY KEY, skill_id TEXT NOT NULL REFERENCES recruitment_skills(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL, task_id TEXT NOT NULL REFERENCES recruitment_tasks(id) ON DELETE CASCADE,
+        status TEXT NOT NULL, parameters_json TEXT NOT NULL, result_summary TEXT NOT NULL DEFAULT '',
+        started_at TEXT NOT NULL, finished_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS recruitment_skill_sources (
+        skill_id TEXT NOT NULL REFERENCES recruitment_skills(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL REFERENCES recruitment_tasks(id) ON DELETE CASCADE,
+        source_kinds_json TEXT NOT NULL, evidence_summary TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY (skill_id, task_id)
+      );
+      CREATE TABLE IF NOT EXISTS recruitment_skill_run_steps (
+        id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES recruitment_skill_runs(id) ON DELETE CASCADE,
+        step_id TEXT NOT NULL, step_index INTEGER NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL,
+        evidence TEXT NOT NULL DEFAULT '', error_code TEXT, error_message TEXT, started_at TEXT, finished_at TEXT,
+        UNIQUE(run_id, step_id)
+      );
       CREATE INDEX IF NOT EXISTS candidate_sources_candidate ON candidate_sources(candidate_id);
       CREATE INDEX IF NOT EXISTS applications_job ON applications(job_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS tasks_updated ON recruitment_tasks(updated_at DESC);
@@ -173,6 +391,10 @@ export class RecruitmentStore {
       CREATE INDEX IF NOT EXISTS events_created ON recruitment_events(created_at DESC);
       CREATE INDEX IF NOT EXISTS platform_validations_created ON platform_validations(created_at DESC);
       CREATE INDEX IF NOT EXISTS candidate_greetings_created ON candidate_greetings(created_at DESC);
+      CREATE INDEX IF NOT EXISTS recruitment_skills_updated ON recruitment_skills(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS recruitment_skill_runs_started ON recruitment_skill_runs(skill_id, started_at DESC);
+      CREATE INDEX IF NOT EXISTS recruitment_skill_sources_task ON recruitment_skill_sources(task_id);
+      CREATE INDEX IF NOT EXISTS recruitment_skill_steps_run ON recruitment_skill_run_steps(run_id, step_index);
     `)
     const candidateColumns = this.db.prepare('PRAGMA table_info(candidates)').all()
     if (!candidateColumns.some(column => column.name === 'notes')) this.db.exec("ALTER TABLE candidates ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
@@ -181,7 +403,49 @@ export class RecruitmentStore {
     if (!taskColumns.some(column => column.name === 'result_summary')) this.db.exec("ALTER TABLE recruitment_tasks ADD COLUMN result_summary TEXT NOT NULL DEFAULT ''")
     if (!taskColumns.some(column => column.name === 'last_browser_url')) this.db.exec('ALTER TABLE recruitment_tasks ADD COLUMN last_browser_url TEXT')
     if (!taskColumns.some(column => column.name === 'run_count')) this.db.exec('ALTER TABLE recruitment_tasks ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0')
+    const skillColumns = this.db.prepare('PRAGMA table_info(recruitment_skills)').all()
+    if (!skillColumns.some(column => column.name === 'category')) this.db.exec("ALTER TABLE recruitment_skills ADD COLUMN category TEXT NOT NULL DEFAULT 'general'")
+    if (!skillColumns.some(column => column.name === 'origin')) this.db.exec("ALTER TABLE recruitment_skills ADD COLUMN origin TEXT NOT NULL DEFAULT 'builtin'")
+    if (!skillColumns.some(column => column.name === 'fingerprint')) this.db.exec('ALTER TABLE recruitment_skills ADD COLUMN fingerprint TEXT')
+    if (!skillColumns.some(column => column.name === 'source_task_count')) this.db.exec('ALTER TABLE recruitment_skills ADD COLUMN source_task_count INTEGER NOT NULL DEFAULT 0')
+    if (!skillColumns.some(column => column.name === 'consecutive_failures')) this.db.exec('ALTER TABLE recruitment_skills ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0')
+    this.db.exec("UPDATE recruitment_skills SET category = CASE platform WHEN 'boss' THEN 'boss' WHEN 'liepin' THEN 'liepin' ELSE 'general' END WHERE category = 'general' AND platform IS NOT NULL")
     this.db.exec("UPDATE recruitment_tasks SET description = title WHERE description = ''")
+    this.seedRecruitmentSkills()
+    this.ensureSkillFingerprints()
+    this.extractSkillDraftsFromHistory()
+  }
+
+  private seedRecruitmentSkills(): void {
+    const now = new Date().toISOString()
+    for (const builtin of BUILTIN_SKILLS) {
+      if (this.db.prepare('SELECT id FROM recruitment_skills WHERE skill_key = ?').get(builtin.key)) continue
+      const id = randomUUID()
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        this.db.prepare(`INSERT INTO recruitment_skills
+          (id, skill_key, name, description, category, platform, status, active_version, execution_mode, risk_level,
+           run_count, success_count, last_run_at, created_at, updated_at, origin, fingerprint, source_task_count, consecutive_failures)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, 0, NULL, ?, ?, 'builtin', NULL, 0, 0)`).run(id, builtin.key, builtin.name, builtin.description,
+            builtin.category, builtin.platform, builtin.status, builtin.executionMode, builtin.riskLevel, now, now)
+        this.db.prepare('INSERT INTO recruitment_skill_versions VALUES (?, ?, 1, ?, ?, ?)')
+          .run(randomUUID(), id, JSON.stringify(builtin.definition), '内置技能初始版本', now)
+        this.db.exec('COMMIT')
+      } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    }
+  }
+
+  private ensureSkillFingerprints(): void {
+    const rows = this.db.prepare('SELECT id, platform, active_version FROM recruitment_skills WHERE fingerprint IS NULL').all()
+    for (const row of rows) {
+      const version = this.db.prepare('SELECT definition_json FROM recruitment_skill_versions WHERE skill_id = ? AND version = ?')
+        .get(String(row.id), Number(row.active_version))
+      if (!version) continue
+      const definition = JSON.parse(String(version.definition_json)) as RecruitmentSkillDefinition
+      const stepText = definition.steps.map(step => `${step.id} ${step.title} ${step.description}`).join(' ')
+      const fingerprint = skillFingerprint(row.platform === null ? null : row.platform as Platform, definition.taskType, canonicalOperations(stepText))
+      this.db.prepare('UPDATE recruitment_skills SET fingerprint = ? WHERE id = ?').run(fingerprint, String(row.id))
+    }
   }
 
   private event(type: string, entityType: RecruitmentEvent['entityType'], entityId: string, summary: string, now: string): RecruitmentEvent {
@@ -253,12 +517,25 @@ export class RecruitmentStore {
       const existing = this.db.prepare('SELECT candidate_id FROM candidate_sources WHERE source_key = ?').get(sourceKey)
       candidateId = existing ? String(existing.candidate_id) : randomUUID()
       if (existing) {
-        this.db.prepare('UPDATE candidates SET display_name = ?, updated_at = ? WHERE id = ?').run(displayName, now, candidateId)
+        this.db.prepare(`UPDATE candidates SET display_name = ?,
+          current_company = CASE WHEN ? <> '' THEN ? ELSE current_company END,
+          current_title = CASE WHEN ? <> '' THEN ? ELSE current_title END,
+          location = CASE WHEN ? <> '' THEN ? ELSE location END,
+          expected_salary = CASE WHEN ? <> '' THEN ? ELSE expected_salary END,
+          expected_position = CASE WHEN ? <> '' THEN ? ELSE expected_position END,
+          updated_at = ? WHERE id = ?`).run(displayName,
+            boundedText(resume.currentCompany, 200), boundedText(resume.currentCompany, 200),
+            boundedText(resume.currentTitle, 200), boundedText(resume.currentTitle, 200),
+            boundedText(resume.location, 120), boundedText(resume.location, 120),
+            boundedText(resume.expectedSalary, 120), boundedText(resume.expectedSalary, 120),
+            boundedText(resume.expectedPosition, 200), boundedText(resume.expectedPosition, 200), now, candidateId)
         this.db.prepare('UPDATE candidate_sources SET source_url = ?, last_seen_at = ? WHERE source_key = ?').run(boundedText(sourceUrl, 2000), now, sourceKey)
       } else {
         this.db.prepare(`INSERT INTO candidates
           (id, display_name, current_company, current_title, location, expected_salary, expected_position, stage, tags_json, notes, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(candidateId, displayName, '', '', '', '', '', 'screening', '[]', '', now, now)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(candidateId, displayName,
+            boundedText(resume.currentCompany, 200), boundedText(resume.currentTitle, 200), boundedText(resume.location, 120),
+            boundedText(resume.expectedSalary, 120), boundedText(resume.expectedPosition, 200), 'screening', '[]', '', now, now)
         this.db.prepare('INSERT INTO candidate_sources VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)').run(randomUUID(), candidateId, platform, 'primary', boundedText(sourceUrl, 2000), sourceKey, digest, 'resume_digest', now)
         this.event('candidate.resume_captured', 'candidate', candidateId, `保存候选人简历来源：${displayName}`, now)
       }
@@ -448,7 +725,9 @@ export class RecruitmentStore {
     const files = this.db.prepare('SELECT path, kind, created_at FROM recruitment_task_files WHERE task_id = ? ORDER BY created_at ASC').all(id).map(row => ({
       path: String(row.path), kind: row.kind as TaskFile['kind'], createdAt: String(row.created_at),
     }))
-    return { task, entries, files }
+    const runRow = this.db.prepare('SELECT * FROM recruitment_skill_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1').get(id)
+    const skillRun = runRow ? this.decodeSkillRun(runRow) : undefined
+    return { task, entries, files, skillRun, skillSteps: skillRun ? this.listSkillRunSteps(skillRun.id) : undefined }
   }
 
   beginTaskRun(id: string): RecruitmentTask {
@@ -507,16 +786,278 @@ export class RecruitmentStore {
     try {
       this.db.prepare('UPDATE recruitment_tasks SET status = ?, progress = ?, started_at = ?, finished_at = ?, error_code = ?, error_message = ?, updated_at = ? WHERE id = ?')
         .run(status, progress, startedAt, finishedAt, errorCode, errorMessage, now, id)
+      const skillRun = this.db.prepare("SELECT id, skill_id, status FROM recruitment_skill_runs WHERE task_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1").get(id)
+      if (skillRun && (status === 'completed' || status === 'failed' || status === 'cancelled')) {
+        const runStatus = status === 'completed' ? 'completed' : 'failed'
+        const summary = status === 'completed' ? boundedText(current.resultSummary, 1000) : errorMessage ?? '任务已取消'
+        this.db.prepare('UPDATE recruitment_skill_runs SET status = ?, result_summary = ?, finished_at = ? WHERE id = ?')
+          .run(runStatus, summary, now, String(skillRun.id))
+        if (status === 'completed') {
+          this.db.prepare('UPDATE recruitment_skills SET success_count = success_count + 1, consecutive_failures = 0, updated_at = ? WHERE id = ?')
+            .run(now, String(skillRun.skill_id))
+        } else if (status === 'failed') {
+          this.db.prepare(`UPDATE recruitment_skills SET consecutive_failures = consecutive_failures + 1,
+            status = CASE WHEN consecutive_failures + 1 >= 3 THEN 'needs_repair' ELSE status END, updated_at = ? WHERE id = ?`)
+            .run(now, String(skillRun.skill_id))
+          const failureCount = Number(this.db.prepare('SELECT consecutive_failures FROM recruitment_skills WHERE id = ?').get(String(skillRun.skill_id))?.consecutive_failures ?? 0)
+          if (failureCount >= 3) this.event('skill.needs_repair', 'skill', String(skillRun.skill_id), `技能连续失败 ${failureCount} 次，已标记 needs_repair`, now)
+        }
+        this.event('skill.run_finished', 'skill', String(skillRun.skill_id), `技能运行${status === 'completed' ? '成功' : '失败'}：${current.title}`, now)
+      }
       this.event('task.status_changed', 'task', id, `任务状态：${current.status} -> ${status}`, now)
       this.db.exec('COMMIT')
     } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    if (status === 'completed') this.extractSkillDraftFromTask(id)
     return this.getTask(id)
+  }
+
+  extractSkillDraftsFromHistory(limit = 200): { created: number; merged: number; skipped: number } {
+    const rows = this.db.prepare("SELECT id FROM recruitment_tasks WHERE status = 'completed' ORDER BY finished_at DESC LIMIT ?")
+      .all(Math.max(1, Math.min(1000, limit)))
+    const result = { created: 0, merged: 0, skipped: 0 }
+    for (const row of rows) result[this.extractSkillDraftFromTask(String(row.id))] += 1
+    return result
+  }
+
+  extractSkillDraftFromTask(taskId: string): 'created' | 'merged' | 'skipped' {
+    const detail = this.getTaskDetail(taskId)
+    if (detail.task.status !== 'completed' || (!detail.entries.length && !detail.task.resultSummary.trim())) return 'skipped'
+    const existingSource = this.db.prepare('SELECT skill_id FROM recruitment_skill_sources WHERE task_id = ? LIMIT 1').get(taskId)
+    if (existingSource) return 'skipped'
+    const sourceKinds: string[] = [...new Set(detail.entries.map(entry => entry.kind === 'browser_result' ? 'dsh_operation' : 'conversation'))]
+    if (!sourceKinds.length) sourceKinds.push('successful_task')
+    const text = [detail.task.title, detail.task.description, detail.task.resultSummary,
+      ...detail.entries.flatMap(entry => [entry.title, entry.content])].join('\n')
+    const operations = canonicalOperations(text)
+    const fingerprint = skillFingerprint(detail.task.platform, detail.task.type, operations)
+    const linkedRun = this.db.prepare('SELECT skill_id FROM recruitment_skill_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT 1').get(taskId)
+    let skillId = linkedRun ? String(linkedRun.skill_id) : ''
+    if (!skillId) {
+      const exact = this.db.prepare('SELECT id FROM recruitment_skills WHERE fingerprint = ? LIMIT 1').get(fingerprint)
+      if (exact) skillId = String(exact.id)
+    }
+    if (!skillId) {
+      let best: { id: string; score: number } | undefined
+      for (const skill of this.listSkills().filter(item => item.definition.taskType === detail.task.type
+        && (item.platform === detail.task.platform || item.platform === null || detail.task.platform === null))) {
+        const candidate = new Set(canonicalOperations(skill.definition.steps.map(step => `${step.id} ${step.title} ${step.description}`).join(' ')))
+        const incoming = new Set(operations)
+        const intersection = [...incoming].filter(item => candidate.has(item)).length
+        const score = intersection / new Set([...incoming, ...candidate]).size
+        if (score >= 0.6 && (!best || score > best.score)) best = { id: skill.id, score }
+      }
+      skillId = best?.id ?? ''
+    }
+    const now = new Date().toISOString()
+    if (!skillId) {
+      skillId = randomUUID()
+      const steps = operations.map(operation => LEARNED_STEP_LIBRARY[operation]).filter(Boolean)
+      const definition: RecruitmentSkillDefinition = {
+        taskType: detail.task.type, parameters: [], steps,
+        permissions: ['读取任务上下文和已有结果', operations.some(item => item === 'save' || item === 'report') ? '写入本地业务数据或工作文件' : '只读执行',
+          operations.includes('contact') ? '外部沟通必须再次取得用户明确授权' : '禁止未经授权的外部沟通'],
+        successCriteria: ['任务结果已写回同一任务', '关键结论具有可复核证据', '最终任务状态为完成'],
+        failureStrategy: '保存失败步骤、错误信息和已有证据，从该断点自动回退给 Agent 继续诊断。',
+      }
+      const category: RecruitmentSkillCategory = detail.task.platform === 'boss' ? 'boss' : detail.task.platform === 'liepin' ? 'liepin' : 'general'
+      const safeName = boundedText(detail.task.title.replace(/\b20\d{2}[-/]?\d{0,2}[-/]?\d{0,2}\b/gu, '').replace(/\s+/gu, ' '), 100) || '历史任务沉淀技能'
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        this.db.prepare(`INSERT INTO recruitment_skills
+          (id, skill_key, name, description, category, platform, status, active_version, execution_mode, risk_level,
+           run_count, success_count, last_run_at, created_at, updated_at, origin, fingerprint, source_task_count, consecutive_failures)
+          VALUES (?, ?, ?, ?, ?, ?, 'draft', 1, 'agent_guided', ?, 0, 0, NULL, ?, ?, 'task_history', ?, 1, 0)`)
+          .run(skillId, `learned-${fingerprint.slice(0, 16)}`, safeName, `从成功任务中自动提取；已合并 1 条历史证据。`, category,
+            detail.task.platform, operations.some(item => item === 'save' || item === 'report') ? 'local_write' : operations.includes('contact') ? 'external_action' : 'read_only',
+            now, now, fingerprint)
+        this.db.prepare('INSERT INTO recruitment_skill_versions VALUES (?, ?, 1, ?, ?, ?)')
+          .run(randomUUID(), skillId, JSON.stringify(definition), `从成功任务「${detail.task.title}」自动提取`, now)
+        this.db.prepare('INSERT INTO recruitment_skill_sources VALUES (?, ?, ?, ?, ?)')
+          .run(skillId, taskId, JSON.stringify(sourceKinds), boundedText(detail.task.resultSummary || detail.entries.at(-1)?.content, 1000), now)
+        this.event('skill.draft_extracted', 'skill', skillId, `从成功任务提取技能草稿：${safeName}`, now)
+        this.db.exec('COMMIT')
+      } catch (error) { this.db.exec('ROLLBACK'); throw error }
+      return 'created'
+    }
+    const skill = this.getSkill(skillId)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const inserted = this.db.prepare('INSERT OR IGNORE INTO recruitment_skill_sources VALUES (?, ?, ?, ?, ?)')
+        .run(skillId, taskId, JSON.stringify(sourceKinds), boundedText(detail.task.resultSummary || detail.entries.at(-1)?.content, 1000), now)
+      if (inserted.changes === 0) { this.db.exec('COMMIT'); return 'skipped' }
+      let activeVersion = skill.activeVersion
+      if (skill.status === 'draft') {
+        const known = new Set(canonicalOperations(skill.definition.steps.map(step => `${step.id} ${step.title} ${step.description}`).join(' ')))
+        const missing = operations.filter(operation => !known.has(operation))
+        if (missing.length) {
+          activeVersion += 1
+          const definition = { ...skill.definition, steps: [...skill.definition.steps, ...missing.map(operation => LEARNED_STEP_LIBRARY[operation]).filter(Boolean)] }
+          this.db.prepare('INSERT INTO recruitment_skill_versions VALUES (?, ?, ?, ?, ?, ?)')
+            .run(randomUUID(), skillId, activeVersion, JSON.stringify(definition), `合并成功任务「${detail.task.title}」中的新步骤`, now)
+        }
+      }
+      this.db.prepare(`UPDATE recruitment_skills SET active_version = ?, source_task_count = source_task_count + 1,
+        description = CASE WHEN origin = 'task_history' THEN '从成功任务中自动提取；已合并 ' || (source_task_count + 1) || ' 条历史证据。' ELSE description END,
+        updated_at = ? WHERE id = ?`).run(activeVersion, now, skillId)
+      this.event('skill.source_merged', 'skill', skillId, `合并相似成功任务：${detail.task.title}`, now)
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    return 'merged'
   }
 
   listEvents(limit = 100): RecruitmentEvent[] {
     return this.db.prepare('SELECT * FROM recruitment_events ORDER BY created_at DESC LIMIT ?').all(Math.max(1, Math.min(100, limit))).map(row => ({
       id: String(row.id), type: String(row.type), entityType: row.entity_type as RecruitmentEvent['entityType'], entityId: String(row.entity_id), summary: String(row.summary), createdAt: String(row.created_at),
     }))
+  }
+
+  private decodeSkill(row: Record<string, unknown>): RecruitmentSkill {
+    const version = this.db.prepare('SELECT definition_json FROM recruitment_skill_versions WHERE skill_id = ? AND version = ?')
+      .get(String(row.id), Number(row.active_version))
+    if (!version) throw new Error('技能版本不存在')
+    return {
+      id: String(row.id), key: String(row.skill_key), name: String(row.name), description: String(row.description), category: row.category as RecruitmentSkillCategory,
+      platform: row.platform === null ? null : row.platform as Platform, status: row.status as RecruitmentSkillStatus,
+      activeVersion: Number(row.active_version), executionMode: row.execution_mode as RecruitmentSkillExecutionMode,
+      riskLevel: row.risk_level as RecruitmentSkill['riskLevel'], definition: JSON.parse(String(version.definition_json)) as RecruitmentSkillDefinition,
+      runCount: Number(row.run_count), successCount: Number(row.success_count), lastRunAt: row.last_run_at === null ? null : String(row.last_run_at),
+      sourceTaskCount: Number(row.source_task_count ?? 0), consecutiveFailures: Number(row.consecutive_failures ?? 0),
+      createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    }
+  }
+
+  getSkill(id: string): RecruitmentSkill {
+    assertUuid(id, '技能 ID')
+    const row = this.db.prepare('SELECT * FROM recruitment_skills WHERE id = ?').get(id)
+    if (!row) throw new Error('招聘技能不存在')
+    return this.decodeSkill(row)
+  }
+
+  listSkills(): RecruitmentSkill[] {
+    return this.db.prepare("SELECT * FROM recruitment_skills ORDER BY CASE status WHEN 'enabled' THEN 0 ELSE 1 END, updated_at DESC")
+      .all().map(row => this.decodeSkill(row))
+  }
+
+  setSkillStatus(id: string, status: 'enabled' | 'disabled', expectedUpdatedAt: string): RecruitmentSkill {
+    if (status !== 'enabled' && status !== 'disabled') throw new Error('技能状态无效')
+    const current = this.getSkill(id)
+    if (current.updatedAt !== expectedUpdatedAt) throw new Error('招聘技能已变化，请刷新后重试')
+    if (current.status === status) return current
+    const now = nextTimestamp(current.updatedAt)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare('UPDATE recruitment_skills SET status = ?, updated_at = ? WHERE id = ?').run(status, now, id)
+      this.event('skill.status_changed', 'skill', id, `技能状态：${current.status} -> ${status}`, now)
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    return this.getSkill(id)
+  }
+
+  startSkillRun(skillId: string, taskId: string, value: unknown): RecruitmentSkillRun {
+    const skill = this.getSkill(skillId)
+    assertUuid(taskId, '任务 ID')
+    if (skill.status !== 'enabled') throw new Error('招聘技能未启用')
+    if (!this.db.prepare('SELECT id FROM recruitment_tasks WHERE id = ?').get(taskId)) throw new Error('招聘任务不存在')
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('技能参数格式无效')
+    const input = value as Record<string, unknown>
+    const knownKeys = new Set(skill.definition.parameters.map(parameter => parameter.key))
+    if (Object.keys(input).some(key => !knownKeys.has(key))) throw new Error('包含技能未声明的参数')
+    const parameters: Record<string, string | number | boolean> = {}
+    for (const parameter of skill.definition.parameters) {
+      const candidate = input[parameter.key] ?? parameter.defaultValue
+      if (parameter.type === 'text') {
+        const safe = boundedText(candidate, 300)
+        if (parameter.required && !safe) throw new Error(`${parameter.label}不能为空`)
+        parameters[parameter.key] = safe
+      } else if (parameter.type === 'number') {
+        const safe = typeof candidate === 'number' ? candidate : Number(candidate)
+        if (!Number.isFinite(safe) || safe < 0 || safe > 1000) throw new Error(`${parameter.label}必须是 0 到 1000 之间的数字`)
+        parameters[parameter.key] = safe
+      } else {
+        if (typeof candidate !== 'boolean') throw new Error(`${parameter.label}必须是布尔值`)
+        parameters[parameter.key] = candidate
+      }
+    }
+    const now = nextTimestamp(skill.updatedAt), run: RecruitmentSkillRun = {
+      id: randomUUID(), skillId, version: skill.activeVersion, taskId, status: 'running', parameters,
+      resultSummary: '', startedAt: now, finishedAt: null,
+    }
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare('INSERT INTO recruitment_skill_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(run.id, run.skillId, run.version, run.taskId, run.status, JSON.stringify(run.parameters), run.resultSummary, run.startedAt, run.finishedAt)
+      const insertStep = this.db.prepare(`INSERT INTO recruitment_skill_run_steps
+        (id, run_id, step_id, step_index, title, status, evidence, error_code, error_message, started_at, finished_at)
+        VALUES (?, ?, ?, ?, ?, 'pending', '', NULL, NULL, NULL, NULL)`)
+      skill.definition.steps.forEach((step, index) => insertStep.run(randomUUID(), run.id, step.id, index, step.title))
+      this.db.prepare('UPDATE recruitment_skills SET run_count = run_count + 1, last_run_at = ?, updated_at = ? WHERE id = ?').run(now, now, skillId)
+      this.event('skill.run_started', 'skill', skillId, `已通过技能 v${skill.activeVersion} 创建任务：${skill.name}`, now)
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    return run
+  }
+
+  listSkillRuns(skillId: string, limit = 20): RecruitmentSkillRun[] {
+    assertUuid(skillId, '技能 ID')
+    return this.db.prepare('SELECT * FROM recruitment_skill_runs WHERE skill_id = ? ORDER BY started_at DESC LIMIT ?')
+      .all(skillId, Math.max(1, Math.min(100, limit))).map(row => this.decodeSkillRun(row))
+  }
+
+  private decodeSkillRun(row: Record<string, unknown>): RecruitmentSkillRun {
+    return { id: String(row.id), skillId: String(row.skill_id), version: Number(row.version), taskId: String(row.task_id),
+      status: row.status as RecruitmentSkillRun['status'], parameters: JSON.parse(String(row.parameters_json)) as RecruitmentSkillRun['parameters'],
+      resultSummary: String(row.result_summary), startedAt: String(row.started_at), finishedAt: row.finished_at === null ? null : String(row.finished_at) }
+  }
+
+  listSkillRunSteps(runId: string): RecruitmentSkillRunStep[] {
+    assertUuid(runId, '技能运行 ID')
+    return this.db.prepare('SELECT * FROM recruitment_skill_run_steps WHERE run_id = ? ORDER BY step_index ASC').all(runId).map(row => ({
+      id: String(row.id), runId: String(row.run_id), stepId: String(row.step_id), stepIndex: Number(row.step_index), title: String(row.title),
+      status: row.status as RecruitmentSkillStepStatus, evidence: String(row.evidence ?? ''),
+      errorCode: row.error_code === null ? null : String(row.error_code), errorMessage: row.error_message === null ? null : String(row.error_message),
+      startedAt: row.started_at === null ? null : String(row.started_at), finishedAt: row.finished_at === null ? null : String(row.finished_at),
+    }))
+  }
+
+  recordSkillStep(taskId: string, value: unknown): SkillStepUpdateResult {
+    assertUuid(taskId, '任务 ID')
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('技能步骤回执格式无效')
+    const input = value as Record<string, unknown>
+    const stepId = boundedText(input.stepId, 120)
+    const status = input.status as RecruitmentSkillStepStatus
+    if (!stepId || !['running', 'completed', 'failed', 'skipped'].includes(status)) throw new Error('技能步骤状态无效')
+    const runRow = this.db.prepare("SELECT * FROM recruitment_skill_runs WHERE task_id = ? AND status = 'running' ORDER BY started_at DESC LIMIT 1").get(taskId)
+    if (!runRow) throw new Error('任务没有正在执行的技能运行')
+    const run = this.decodeSkillRun(runRow)
+    const step = this.db.prepare('SELECT * FROM recruitment_skill_run_steps WHERE run_id = ? AND step_id = ?').get(run.id, stepId)
+    if (!step) throw new Error('技能步骤不存在')
+    const current = step.status as RecruitmentSkillStepStatus
+    const allowed = current === 'pending' ? ['running', 'completed', 'failed', 'skipped']
+      : current === 'running' ? ['completed', 'failed'] : []
+    if (!allowed.includes(status)) throw new Error(`技能步骤不能从 ${current} 变为 ${status}`)
+    const evidence = boundedText(input.evidence, 4000)
+    const errorCode = status === 'failed' ? boundedText(input.errorCode, 80) || 'SKILL_STEP_FAILED' : null
+    const errorMessage = status === 'failed' ? boundedText(input.errorMessage, 1000) || '技能步骤执行失败' : null
+    if ((status === 'completed' || status === 'failed') && !evidence) throw new Error('完成或失败步骤必须提供证据')
+    const now = new Date().toISOString()
+    const startedAt = current === 'pending' && status === 'running' ? now : step.started_at === null ? now : String(step.started_at)
+    const finishedAt = status === 'completed' || status === 'failed' || status === 'skipped' ? now : null
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare(`UPDATE recruitment_skill_run_steps SET status = ?, evidence = ?, error_code = ?, error_message = ?,
+        started_at = ?, finished_at = ? WHERE id = ?`).run(status, evidence, errorCode, errorMessage, startedAt, finishedAt, String(step.id))
+      if (status === 'failed') {
+        this.db.prepare('INSERT INTO recruitment_task_entries VALUES (?, ?, ?, ?, ?, NULL, ?)')
+          .run(randomUUID(), taskId, 'note', `技能断点：${String(step.title)}`, `步骤 ${stepId} 失败。\n错误：${errorCode} - ${errorMessage}\n证据：${evidence}`, now)
+        this.db.prepare("UPDATE recruitment_tasks SET status = 'paused', error_code = ?, error_message = ?, updated_at = ? WHERE id = ?")
+          .run(errorCode, errorMessage, now, taskId)
+        this.event('skill.step_failed', 'skill', run.skillId, `步骤失败并回退 Agent：${String(step.title)}`, now)
+      } else this.event('skill.step_updated', 'skill', run.skillId, `步骤 ${String(step.title)}：${status}`, now)
+      this.db.exec('COMMIT')
+    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    const fallbackPrompt = status === 'failed'
+      ? `技能执行在步骤「${String(step.title)}」失败并已保存断点。请读取任务 ${taskId}，基于失败证据诊断原因，从该步骤继续；不要重复已完成步骤。` : null
+    return { run, steps: this.listSkillRunSteps(run.id), fallbackRequired: status === 'failed', fallbackPrompt }
   }
 
   recordPlatformValidation(platform: Platform, check: PlatformValidationRecord['check'], status: PlatformValidationRecord['status'], summary: string, runId: string): PlatformValidationRecord {

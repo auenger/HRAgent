@@ -51,6 +51,8 @@ export class AgentHrBridge {
     private readonly getWorkspace?: () => unknown,
     private readonly getTaskDetail?: (id: string) => Promise<unknown> | unknown,
     private readonly appendTaskEntry?: (id: string, value: unknown) => Promise<unknown> | unknown,
+    private readonly screenshotPage?: () => Promise<unknown>,
+    private readonly recordSkillStep?: (id: string, value: unknown) => Promise<unknown> | unknown,
   ) {}
 
   async start(): Promise<BridgeAddress> {
@@ -248,6 +250,31 @@ export class AgentHrBridge {
         })
         return
       }
+      if (request.method === 'POST' && request.url === '/v1/skills/step') {
+        let body = ''
+        let tooLarge = false
+        request.setEncoding('utf8')
+        request.on('data', (chunk: string) => {
+          if (tooLarge) return
+          if (body.length + chunk.length > 12_000) { tooLarge = true; return }
+          body += chunk
+        })
+        request.on('end', () => {
+          if (tooLarge) { response.writeHead(413).end(); return }
+          void Promise.resolve().then(() => {
+            const input = JSON.parse(body) as Record<string, unknown>
+            if (!this.recordSkillStep || typeof input.taskId !== 'string') throw new Error('Skill step write is unavailable')
+            return this.recordSkillStep(input.taskId, input)
+          }).then(result => {
+            response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            response.end(JSON.stringify({ result }))
+          }).catch(error => {
+            response.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+            response.end(JSON.stringify({ error: error instanceof Error ? error.message.slice(0, 500) : '技能步骤回执未保存' }))
+          })
+        })
+        return
+      }
       if (request.method !== 'GET') {
         response.writeHead(404).end()
         return
@@ -262,6 +289,19 @@ export class AgentHrBridge {
         }).catch(error => {
           response.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
           response.end(JSON.stringify({ error: error instanceof Error ? error.message.slice(0, 500) : '当前页面无法读取' }))
+        })
+        return
+      }
+      if (request.url === '/v1/browser/screenshot') {
+        void Promise.resolve().then(() => {
+          if (!this.screenshotPage) throw new Error('Browser screenshot unavailable')
+          return this.screenshotPage()
+        }).then(screenshot => {
+          response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          response.end(JSON.stringify({ screenshot }))
+        }).catch(error => {
+          response.writeHead(409, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          response.end(JSON.stringify({ error: error instanceof Error ? error.message.slice(0, 500) : '当前页面无法截取诊断画面' }))
         })
         return
       }

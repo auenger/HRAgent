@@ -21,6 +21,7 @@ interface WorkspaceFile {
   previewable: boolean
   content: string
 }
+interface WorkspaceTreeEntry { path: string; name: string; kind: 'file' | 'directory'; size: number; updatedAt: string; previewable: boolean }
 
 interface CandidatePreview {
   cardIndex: number
@@ -71,12 +72,37 @@ interface RecruitmentTask {
 }
 interface TaskEntry { id: string; taskId: string; kind: 'analysis' | 'browser_result' | 'note'; title: string; content: string; sourceUrl: string | null; createdAt: string }
 interface TaskFile { path: string; kind: 'input' | 'output'; createdAt: string }
-interface RecruitmentTaskDetail { task: RecruitmentTask; entries: TaskEntry[]; files: TaskFile[] }
+interface RecruitmentSkillRunStep { id: string; runId: string; stepId: string; stepIndex: number; title: string; status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'; evidence: string; errorCode: string | null; errorMessage: string | null; startedAt: string | null; finishedAt: string | null }
+interface RecruitmentTaskDetail { task: RecruitmentTask; entries: TaskEntry[]; files: TaskFile[]; skillRun?: RecruitmentSkillRun; skillSteps?: RecruitmentSkillRunStep[] }
+
+interface RecruitmentSkillParameter { key: string; label: string; description: string; type: 'text' | 'number' | 'boolean'; required: boolean; defaultValue: string | number | boolean }
+interface RecruitmentSkillStep { id: string; title: string; description: string; verification: string }
+interface RecruitmentSkill {
+  id: string
+  key: string
+  name: string
+  description: string
+  category: 'general' | 'boss' | 'liepin'
+  platform: 'boss' | 'liepin' | null
+  status: 'draft' | 'enabled' | 'disabled' | 'needs_repair'
+  activeVersion: number
+  executionMode: 'agent_guided' | 'deterministic'
+  riskLevel: 'read_only' | 'local_write' | 'external_action'
+  definition: { taskType: RecruitmentTask['type']; parameters: RecruitmentSkillParameter[]; steps: RecruitmentSkillStep[]; permissions: string[]; successCriteria: string[]; failureStrategy: string }
+  runCount: number
+  successCount: number
+  sourceTaskCount: number
+  consecutiveFailures: number
+  lastRunAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+interface RecruitmentSkillRun { id: string; skillId: string; version: number; taskId: string; status: 'running' | 'completed' | 'failed'; parameters: Record<string, string | number | boolean>; resultSummary: string; startedAt: string; finishedAt: string | null }
 
 interface RecruitmentEvent {
   id: string
   type: string
-  entityType: 'job' | 'candidate' | 'application' | 'task' | 'assessment'
+  entityType: 'job' | 'candidate' | 'application' | 'task' | 'assessment' | 'skill'
   entityId: string
   summary: string
   createdAt: string
@@ -91,7 +117,15 @@ interface PlatformValidationRecord {
   createdAt: string
 }
 
-interface OpenResume { name: string; text: string }
+interface OpenResume {
+  name: string
+  text: string
+  currentCompany: string
+  currentTitle: string
+  location: string
+  expectedSalary: string
+  expectedPosition: string
+}
 interface JobBrief {
   role: string
   requirements: string
@@ -140,6 +174,8 @@ interface Window {
     setPaneLayout(layout: { navWidth?: number; rightWidth?: number; navCollapsed?: boolean }): Promise<void>
     pickFiles(): Promise<WorkspaceFile[]>
     listWorkspaceFiles(): Promise<WorkspaceFile[]>
+    listWorkspaceDirectory(path?: string): Promise<WorkspaceTreeEntry[]>
+    readWorkspaceFile(path: string): Promise<WorkspaceFile>
     chooseWorkspace(): Promise<{ path: string; name: string }>
     setBrowserControl(control: 'agent' | 'human'): Promise<void>
     listVisibleCandidates(): Promise<CandidatePreview[]>
@@ -160,11 +196,15 @@ interface Window {
     listAssessments(scope: 'active' | 'all'): Promise<AssessmentCard[]>
     setReviewStatus(id: string, status: AssessmentCard['reviewStatus']): Promise<AssessmentCard>
     listTasks(scope: 'active' | 'all'): Promise<RecruitmentTask[]>
+    listSkills(): Promise<RecruitmentSkill[]>
+    setSkillStatus(id: string, status: 'enabled' | 'disabled', expectedUpdatedAt: string): Promise<RecruitmentSkill>
+    runSkill(id: string, parameters: Record<string, string | number | boolean>): Promise<{ skillRun: RecruitmentSkillRun; task: RecruitmentTask }>
     createTask(value: { jobId?: string | null; type: RecruitmentTask['type']; platform?: 'boss' | 'liepin' | null; profileId?: string | null; title: string; description: string; workspacePaths?: string[] }): Promise<RecruitmentTask>
     getTask(id: string): Promise<RecruitmentTaskDetail>
     addTaskNote(id: string, value: { title: string; content: string }): Promise<RecruitmentTaskDetail>
     workOnTask(id: string, mode: 'continue' | 'new_session'): Promise<RecruitmentTask>
     setTaskStatus(id: string, status: RecruitmentTask['status'], expectedUpdatedAt: string): Promise<RecruitmentTask>
+    recordSkillStep(id: string, value: { stepId: string; status: RecruitmentSkillRunStep['status']; evidence?: string; errorCode?: string; errorMessage?: string }): Promise<{ run: RecruitmentSkillRun; steps: RecruitmentSkillRunStep[]; fallbackRequired: boolean; fallbackPrompt: string | null }>
     listRecruitmentEvents(): Promise<RecruitmentEvent[]>
     listPlatformValidations(): Promise<PlatformValidationRecord[]>
     validatePlatform(check: PlatformValidationRecord['check']): Promise<PlatformValidationRecord>
@@ -177,6 +217,7 @@ interface Window {
     onJobsChanged(listener: () => void): () => void
     onCandidatesChanged(listener: () => void): () => void
     onTasksChanged(listener: () => void): () => void
+    onSkillsChanged(listener: () => void): () => void
     onRecordsChanged(listener: () => void): () => void
     onWorkspaceChanged(listener: () => void): () => void
   }

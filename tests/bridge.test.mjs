@@ -21,6 +21,7 @@ test('DSH bridge is loopback-only and rejects unauthenticated requests', async (
     () => ({ path: '/tmp/agenthr-workspace', name: 'agenthr-workspace' }),
     id => ({ task: { id, title: '测试任务', description: '明确输入' }, entries: [], files: [] }),
     (id, value) => ({ task: { id }, entries: [{ id: 'entry-1', ...value }], files: [] }),
+    async () => ({ base64: 'cG5n', mediaType: 'image/png', bytes: 3, width: 100, height: 60, digest: 'a'.repeat(64), platform: 'liepin', path: '/recommend', capturedAt: '2026-09-18T00:00:00.000Z' }),
   )
   const address = await bridge.start()
   try {
@@ -39,6 +40,8 @@ test('DSH bridge is loopback-only and rejects unauthenticated requests', async (
       body: JSON.stringify({ taskId: 'task-1', kind: 'analysis', title: '结论', content: '分析完成' }),
     })
     assert.equal((await taskEntry.json()).taskDetail.entries[0].content, '分析完成')
+    const screenshot = await fetch(`${address.url}/v1/browser/screenshot`, { headers: { Authorization: `Bearer ${address.token}` } })
+    assert.deepEqual(await screenshot.json(), { screenshot: { base64: 'cG5n', mediaType: 'image/png', bytes: 3, width: 100, height: 60, digest: 'a'.repeat(64), platform: 'liepin', path: '/recommend', capturedAt: '2026-09-18T00:00:00.000Z' } })
     const unknown = await fetch(`${address.url}/v1/browser/unknown`, { headers: { Authorization: `Bearer ${address.token}` } })
     assert.equal(unknown.status, 404)
     const candidates = await fetch(`${address.url}/v1/candidates/visible`, { headers: { Authorization: `Bearer ${address.token}` } })

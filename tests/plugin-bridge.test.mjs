@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -34,27 +35,72 @@ test('AgentHR tools read synthetic role and resume, then save an evidence-backed
     () => ({ path: home, name: 'workspace' }),
     async id => ({ task: { id, title: '寻找候选人', description: '寻找上海 Java 候选人' }, entries: [], files: [] }),
     async (id, value) => ({ task: { id }, entries: [{ id: 'entry-1', ...value }], files: [] }),
+    async () => ({ base64: 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEUlEQVQImWPgEpH7D8IMMAYAJowE7bwlVOYAAAAASUVORK5CYII=', mediaType: 'image/png', bytes: 92, width: 2, height: 2,
+      digest: 'b'.repeat(64), platform: 'liepin', path: '/search', capturedAt: '2026-09-18T00:00:00.000Z' }),
   )
   const address = await bridge.start()
   const oldUrl = process.env.AGENTHR_BRIDGE_URL
   const oldToken = process.env.AGENTHR_BRIDGE_TOKEN
+  const oldDshHome = process.env.DSH_HOME
   process.env.AGENTHR_BRIDGE_URL = address.url
   process.env.AGENTHR_BRIDGE_TOKEN = address.token
+  process.env.DSH_HOME = home
   try {
     const registered = new Map()
+    const savedImages = []
+    const subagentRuns = []
     apply({
       tools: { register: tool => registered.set(tool.name, tool) },
       systemPrompt: { section: () => {} },
+      attachments: { saveImage: async input => {
+        savedImages.push(input)
+        return { attachmentId: `sha256:${createHash('sha256').update(input.data).digest('hex')}`, mediaType: 'image/png', bytes: input.data.byteLength, width: 1, height: 1, name: input.name }
+      },
+      readImageRequest: async () => { throw new Error('not used') },
+      imageHostPath: ref => {
+        const hash = String(ref.attachmentId).slice(7)
+        return join(home, 'attachments', 'v1', 'objects', hash.slice(0, 2), hash)
+      } },
+      subagents: { start: async (provider, request) => {
+        subagentRuns.push({ provider, request })
+        return {
+          result: Promise.resolve({
+            stopReason: 'completed',
+            output: [],
+            structured: {
+              summary: '页面中央存在引导遮罩。',
+              observations: ['可见半透明遮罩', '右上角有关闭图标'],
+              obstruction: 'overlay',
+              confidence: 'high',
+              recommendedNextStep: '重新读取页面快照并操作顶层关闭控件。',
+            },
+          }),
+          dispose: async () => {},
+        }
+      } },
+      effect: () => () => {},
     })
     const signal = new AbortController().signal
-    const call = async (name, args = {}) => JSON.parse(await registered.get(name).execute(args, { signal }))
+    const agent = { session: { id: 'parent-agent' } }
+    const call = async (name, args = {}) => JSON.parse(await registered.get(name).execute(args, { signal, agent }))
     const job = (await call('agenthr_get_job_brief')).jobBrief
     assert.deepEqual((await call('agenthr_get_workspace')).workspace, { path: home, name: 'workspace' })
     const current = (await call('agenthr_read_open_resume')).resume
     assert.equal((await call('agenthr_browser_status')).page, 'recommend')
     assert.equal((await call('agenthr_browser_status')).url, 'https://lpt.liepin.com/recommend')
     assert.equal((await call('agenthr_browser_snapshot')).snapshot.frames[0].text, 'Java 工程师')
-    assert.equal((await call('agenthr_browser_action', { snapshotId: 'abc123', action: 'fill', ref: 'main:e0', value: 'Java 工程师' })).result.done, true)
+    assert.equal((await call('agenthr_browser_action', { snapshotId: 'abc123', action: 'fill', ref: 'main:e0', value: 'Java 工程师', wait: { type: 'control_value', ref: 'main:e0', value: 'Java 工程师', timeoutMs: 1000 } })).result.done, true)
+    assert.equal(browserActions[0][1].wait.type, 'control_value')
+    const screenshotTool = registered.get('agenthr_browser_visual_diagnosis')
+    const screenshot = await screenshotTool.execute({ question: '是否有遮罩挡住候选人详情？' }, { signal, agent })
+    assert.equal(screenshot.diagnostic.digest, 'b'.repeat(64))
+    assert.equal(screenshot.diagnostic.obstruction, 'overlay')
+    assert.equal(savedImages[0].mediaType, 'image/png')
+    assert.equal(subagentRuns[0].provider, 'spawn')
+    assert.deepEqual(subagentRuns[0].request.prompt.map(block => block.type), ['text', 'image'])
+    assert.deepEqual(subagentRuns[0].request.toolFilter, { allow: [] })
+    assert.deepEqual(screenshotTool.output.render({}, screenshot).map(block => block.type), ['text'])
+    assert.equal(JSON.stringify(screenshot).includes('attachmentId'), false)
     assert.equal((await call('agenthr_list_visible_candidates')).candidates[0].fingerprint, candidateFingerprint)
     assert.equal((await call('agenthr_save_visible_candidates')).candidates[0].id, 'candidate-1')
     const storedCandidate = (await call('agenthr_list_candidates')).candidates[0]
@@ -91,6 +137,8 @@ test('AgentHR tools read synthetic role and resume, then save an evidence-backed
     else process.env.AGENTHR_BRIDGE_URL = oldUrl
     if (oldToken === undefined) delete process.env.AGENTHR_BRIDGE_TOKEN
     else process.env.AGENTHR_BRIDGE_TOKEN = oldToken
+    if (oldDshHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = oldDshHome
     await bridge.stop()
     store.close()
     rmSync(home, { recursive: true, force: true })

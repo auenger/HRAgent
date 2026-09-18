@@ -52,5 +52,5 @@ export function extractOpenBossResume(doc: Document): OpenResume | null {
   if (text.length < 20) return null
   const name = (root.querySelector('.name, .resume-name, [class*="name"]')?.textContent ?? '')
     .replace(/\s+/gu, ' ').trim().slice(0, 120)
-  return { name, text }
+  return { name, text, currentCompany: '', currentTitle: '', location: '', expectedSalary: '', expectedPosition: '' }
 }

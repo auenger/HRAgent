@@ -1,28 +1,42 @@
 import type { CandidatePreview } from './liepin.js'
-import type { PointerPoint } from './browser-visual.js'
 
-export interface BossGreetingInput extends CandidatePreview {
-  platform: 'boss'
+export interface BossGreetingInput extends CandidatePreview { platform: 'boss' }
+export type BossGreetingTargetState = 'ready' | 'already_contacted' | 'unavailable'
+
+/** Read-only business check used before trusted input dispatch. */
+export function inspectBossGreetingTarget(doc: Document, input: BossGreetingInput): BossGreetingTargetState {
+  const visibleCard = (element: HTMLElement): boolean => {
+    for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+      const style = doc.defaultView?.getComputedStyle?.(node)
+      if (node.hidden || node.getAttribute('aria-hidden') === 'true'
+        || style?.display === 'none' || style?.visibility === 'hidden') return false
+    }
+    const rect = element.getBoundingClientRect()
+    return rect.width > 0 && rect.height > 0
+  }
+  const normalize = (value: string) => value.replace(/\s+/gu, ' ').trim()
+  const matches = Array.from(doc.querySelectorAll<HTMLElement>('.card-list .candidate-card-wrap, .recommend-card-list .candidate-card-wrap'))
+    .filter((candidate, index) => index === input.cardIndex && visibleCard(candidate)
+      && normalize(candidate.querySelector('.name')?.textContent ?? '') === normalize(input.name)
+      && (!input.skills || normalize(candidate.textContent ?? '').includes(normalize(input.skills)))
+      && (!input.summary || normalize(candidate.textContent ?? '').includes(normalize(input.summary))))
+  const card = matches.length === 1 ? matches[0] : null
+  if (!card) return 'unavailable'
+  const visible = (element: HTMLElement): boolean => {
+    const rect = element.getBoundingClientRect()
+    return rect.width > 0 && rect.height > 0 && !element.hidden && element.getAttribute('aria-hidden') !== 'true'
+  }
+  const normalized = (value: string) => value.replace(/\s+/gu, ' ').trim()
+  const already = Array.from(card.querySelectorAll<HTMLElement>('.btn.btn-continue, .btn-outline'))
+    .some(button => visible(button) && /继续沟通|已沟通|沟通中/iu.test(normalized(button.textContent ?? '')))
+  if (already) return 'already_contacted'
+  const buttons = Array.from(card.querySelectorAll<HTMLElement>('.btn.btn-greet, .btn.btn-getcontact'))
+    .filter(button => visible(button) && !button.matches(':disabled, [aria-disabled="true"]'))
+  return buttons.length === 1 ? 'ready' : 'unavailable'
 }
 
-export interface BossGreetingResult {
-  greeted: boolean
-  alreadyContacted: boolean
-  name: string
-  pointer?: PointerPoint
-}
-
-/**
- * Runs only after the main process re-read and uniquely matched the candidate card.
- * The caller supplies the visual helpers so this remains serializable in a site frame.
- */
-export async function animateBossGreeting(
-  doc: Document,
-  input: BossGreetingInput,
-  delayMs: number,
-  previousPointer: PointerPoint | null,
-  beginVisual?: (doc: Document, target: HTMLElement, previous: PointerPoint | null, delay: number) => Promise<{ point?: PointerPoint }>,
-): Promise<BossGreetingResult> {
+/** Returns the uniquely re-matched button; CdpBrowser performs the actual click. */
+export function resolveBossGreetingTarget(doc: Document, input: BossGreetingInput): HTMLElement | null {
   const visible = (element: HTMLElement): boolean => {
     for (let node: HTMLElement | null = element; node; node = node.parentElement) {
       const style = doc.defaultView?.getComputedStyle?.(node)
@@ -32,28 +46,32 @@ export async function animateBossGreeting(
     const rect = element.getBoundingClientRect()
     return rect.width > 0 && rect.height > 0
   }
-  const cards = Array.from(doc.querySelectorAll<HTMLElement>(
-    '.card-list .candidate-card-wrap, .recommend-card-list .candidate-card-wrap',
-  )).filter(card => visible(card))
   const normalized = (value: string) => value.replace(/\s+/gu, ' ').trim()
-  const expectedName = normalized(input.name)
-  const matches = cards.filter((card, index) => {
-    if (index !== input.cardIndex) return false
-    const name = normalized(card.querySelector('.name')?.textContent ?? '')
-    const text = normalized(card.textContent ?? '')
-    return name === expectedName && (!input.skills || text.includes(normalized(input.skills)))
-      && (!input.summary || text.includes(normalized(input.summary)))
-  })
-  if (matches.length !== 1) return { greeted: false, alreadyContacted: false, name: expectedName }
-  const card = matches[0]
+  const cards = Array.from(doc.querySelectorAll<HTMLElement>('.card-list .candidate-card-wrap, .recommend-card-list .candidate-card-wrap'))
+    .filter((card, index) => index === input.cardIndex && visible(card)
+      && normalized(card.querySelector('.name')?.textContent ?? '') === normalized(input.name)
+      && (!input.skills || normalized(card.textContent ?? '').includes(normalized(input.skills)))
+      && (!input.summary || normalized(card.textContent ?? '').includes(normalized(input.summary))))
+  if (cards.length !== 1) return null
+  const card = cards[0]
   const already = Array.from(card.querySelectorAll<HTMLElement>('.btn.btn-continue, .btn-outline'))
     .some(button => visible(button) && /继续沟通|已沟通|沟通中/iu.test(normalized(button.textContent ?? '')))
-  if (already) return { greeted: false, alreadyContacted: true, name: expectedName }
+  if (already) return null
   const buttons = Array.from(card.querySelectorAll<HTMLElement>('.btn.btn-greet, .btn.btn-getcontact'))
     .filter(button => visible(button) && !button.matches(':disabled, [aria-disabled="true"]'))
-  if (buttons.length !== 1) return { greeted: false, alreadyContacted: false, name: expectedName }
-  const target = buttons[0]
-  const visual = beginVisual ? await beginVisual(doc, target, previousPointer, delayMs) : {}
-  target.click()
-  return { greeted: true, alreadyContacted: false, name: expectedName, pointer: visual.point }
+  return buttons.length === 1 ? buttons[0] : null
+}
+
+/** Resolves the only visible close control for an open BOSS resume detail. */
+export function resolveBossDetailCloseTarget(doc: Document): HTMLElement | null {
+  const visible = (element: HTMLElement): boolean => {
+    for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+      const style = doc.defaultView?.getComputedStyle?.(node)
+      if (node.hidden || node.getAttribute('aria-hidden') === 'true'
+        || style?.display === 'none' || style?.visibility === 'hidden') return false
+    }
+    return true
+  }
+  const buttons = Array.from(doc.querySelectorAll<HTMLElement>('.boss-popup__close, .resume-custom-close')).filter(visible)
+  return buttons.length === 1 ? buttons[0] : null
 }

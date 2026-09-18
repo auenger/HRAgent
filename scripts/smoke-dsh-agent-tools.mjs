@@ -63,6 +63,7 @@ try {
     'agenthr_browser_action',
     'agenthr_browser_snapshot',
     'agenthr_browser_status',
+    'agenthr_browser_visual_diagnosis',
     'agenthr_create_task',
     'agenthr_get_job_brief',
     'agenthr_get_task',
@@ -74,12 +75,20 @@ try {
     'agenthr_open_candidate_preview',
     'agenthr_open_recommendations',
     'agenthr_read_open_resume',
+    'agenthr_record_skill_step',
     'agenthr_save_assessment_draft',
     'agenthr_save_job_brief',
     'agenthr_save_visible_candidates',
     'agenthr_update_candidate',
+    'bash',
+    'edit',
+    'glob',
+    'grep',
+    'read',
+    'read_image',
+    'write',
   ])
-  process.stdout.write(`AgentHR preset exposes exactly ${names.length} recruitment tools to a DSH agent.\n`)
+  process.stdout.write(`AgentHR preset exposes ${names.length} tools, including standard shell/filesystem surfaces and recruitment tools.\n`)
 } finally {
   await handle?.dispose()
   await ctx?.fiber.dispose()

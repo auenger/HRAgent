@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from 'node:fs'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export interface AgentHrWorkspace {
@@ -15,8 +15,17 @@ export interface WorkspaceFile {
   content: string
 }
 
+export interface WorkspaceTreeEntry {
+  path: string
+  name: string
+  kind: 'file' | 'directory'
+  size: number
+  updatedAt: string
+  previewable: boolean
+}
+
 const TEXT_EXTENSIONS = new Set(['.md', '.txt', '.json', '.csv', '.tsv', '.yaml', '.yml', '.html', '.xml'])
-const SKIP_DIRECTORIES = new Set(['.git', '.svn', 'node_modules'])
+const SKIP_DIRECTORIES = new Set(['.git', '.svn', 'node_modules', 'bower_components', 'vendor', 'venv', '.venv', '__pycache__', 'Pods', '.pnpm', '.gradle', '.next', '.cache'])
 
 function atomicWrite(path: string, content: string): void {
   const temporary = `${path}.tmp`
@@ -50,6 +59,9 @@ function detectDshWorkspace(userData: string): string | undefined {
 export class WorkspaceStore {
   private readonly configPath: string
   private workspace: AgentHrWorkspace
+  private watcher?: FSWatcher
+  private watchTimer?: ReturnType<typeof setTimeout>
+  private readonly changeListeners = new Set<() => void>()
 
   constructor(private readonly userData: string, fallback = process.cwd()) {
     this.configPath = join(userData, 'agenthr-workspace.json')
@@ -73,7 +85,41 @@ export class WorkspaceStore {
     const selected = canonicalDirectory(path)
     this.workspace = { path: selected, name: basename(selected) || selected }
     this.persist()
+    this.restartWatcher()
     return this.get()
+  }
+
+  watchChanges(listener: () => void): () => void {
+    this.changeListeners.add(listener)
+    this.restartWatcher()
+    return () => {
+      this.changeListeners.delete(listener)
+      if (this.changeListeners.size === 0) this.stopWatcher()
+    }
+  }
+
+  private restartWatcher(): void {
+    this.stopWatcher()
+    if (this.changeListeners.size === 0) return
+    const changed = (): void => {
+      if (this.watchTimer) clearTimeout(this.watchTimer)
+      this.watchTimer = setTimeout(() => {
+        this.watchTimer = undefined
+        for (const listener of this.changeListeners) listener()
+      }, 180)
+    }
+    try {
+      this.watcher = watch(this.workspace.path, { recursive: true, persistent: false }, changed)
+    } catch {
+      this.watcher = watch(this.workspace.path, { persistent: false }, changed)
+    }
+  }
+
+  private stopWatcher(): void {
+    if (this.watchTimer) clearTimeout(this.watchTimer)
+    this.watchTimer = undefined
+    this.watcher?.close()
+    this.watcher = undefined
   }
 
   private persist(): void {
@@ -86,6 +132,39 @@ export class WorkspaceStore {
     const child = relative(this.workspace.path, target)
     if (!child || child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)) throw new Error('工作文件必须位于工作目录中')
     return target
+  }
+
+  private directoryInside(relativePath: string): string {
+    if (!relativePath) return this.workspace.path
+    return this.resolveInside(relativePath)
+  }
+
+  listDirectory(relativePath = ''): WorkspaceTreeEntry[] {
+    const directory = this.directoryInside(relativePath)
+    if (!statSync(directory).isDirectory()) throw new Error('工作目录节点不是文件夹')
+    const entries: WorkspaceTreeEntry[] = []
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (SKIP_DIRECTORIES.has(entry.name) || (!entry.isDirectory() && !entry.isFile())) continue
+      const absolute = join(directory, entry.name)
+      const info = statSync(absolute)
+      const path = relative(this.workspace.path, absolute)
+      const extension = extname(entry.name).toLowerCase()
+      entries.push({
+        path, name: entry.name, kind: entry.isDirectory() ? 'directory' : 'file', size: entry.isFile() ? info.size : 0,
+        updatedAt: info.mtime.toISOString(), previewable: entry.isFile() && TEXT_EXTENSIONS.has(extension) && info.size <= 1024 * 1024,
+      })
+    }
+    return entries
+  }
+
+  readFile(relativePath: string): WorkspaceFile {
+    const absolute = this.resolveInside(relativePath)
+    const info = statSync(absolute)
+    if (!info.isFile()) throw new Error('工作目录节点不是文件')
+    const name = basename(absolute)
+    const previewable = TEXT_EXTENSIONS.has(extname(name).toLowerCase()) && info.size <= 1024 * 1024
+    return { path: relative(this.workspace.path, absolute), name, size: info.size, updatedAt: info.mtime.toISOString(), previewable,
+      content: previewable ? readFileSync(absolute, 'utf8') : '' }
   }
 
   importFiles(paths: string[]): WorkspaceFile[] {

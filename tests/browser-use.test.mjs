@@ -45,11 +45,13 @@ test('page snapshot exposes general controls and marks sensitive controls instea
   assert.match(pointer.style.filter, /drop-shadow/u)
   assert.equal(pointer.style.width, '20px')
   assert.match(pointer.innerHTML, /fill="#20242b"/u)
+  assert.equal(pointer.getAttribute('data-agenthr-phase'), 'dispatched')
   assert.equal(document.querySelectorAll('[data-agenthr-visual="border"]').length, 0)
   const next = inspectBrowserFrame(document, 'main').controls.find(control => control.label === '展开更多条件')
-  const clicked = await actOnBrowserFrame(document, { type: 'click', ref: next.ref }, next.signature, 0, filled.pointer)
+  const clicked = await actOnBrowserFrame(document, { type: 'click', ref: next.ref }, next.signature, 0, filled.pointer, undefined, true)
   assert.equal(clicked.done, true)
   assert.equal(document.querySelector('[data-agenthr-visual="pointer"]'), pointer)
+  assert.equal(pointer.getAttribute('data-agenthr-phase'), 'targeted')
   assert.equal(document.querySelectorAll('[data-agenthr-visual="border"]').length, 0)
 })
 
@@ -67,9 +69,9 @@ test('Agent can select filters and toggle ordinary controls while sensitive acti
 
   snapshot = inspectBrowserFrame(document, 'main')
   const checkbox = snapshot.controls.find(control => control.kind === 'checkbox')
-  assert.equal((await actOnBrowserFrame(document, { type: 'click', ref: checkbox.ref }, checkbox.signature, 0)).done, true)
+  assert.equal((await actOnBrowserFrame(document, { type: 'click', ref: checkbox.ref }, checkbox.signature, 0, null, undefined, true)).done, true)
   const ordinary = snapshot.controls.find(control => control.label === '查看更多')
-  assert.equal((await actOnBrowserFrame(document, { type: 'click', ref: ordinary.ref }, ordinary.signature, 0)).done, true)
+  assert.equal((await actOnBrowserFrame(document, { type: 'click', ref: ordinary.ref }, ordinary.signature, 0, null, undefined, true)).done, true)
   const send = snapshot.controls.find(control => control.label === '发送消息')
   assert.deepEqual(await actOnBrowserFrame(document, { type: 'click', ref: send.ref }, send.signature, 0), {
     done: false, action: 'authorization_required', reason: '对外联系或提交需要用户授权',

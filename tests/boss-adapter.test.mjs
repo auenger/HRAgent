@@ -36,7 +36,8 @@ test('BOSS resume is read only from one visible detail frame and its resume root
   assert.equal(hasSingleVisibleBossFrame(multiple, resumeSelector), false)
 
   const { document: detail } = parseHTML(`<div>页面背景不属于简历</div><div id="resume"><h1 class="name">示例候选人</h1><section>熟悉动物实验；tMCAO 操作经验未知。</section></div>`)
-  const expected = { name: '示例候选人', text: '示例候选人熟悉动物实验；tMCAO 操作经验未知。' }
+  const expected = { name: '示例候选人', text: '示例候选人熟悉动物实验；tMCAO 操作经验未知。',
+    currentCompany: '', currentTitle: '', location: '', expectedSalary: '', expectedPosition: '' }
   assert.deepEqual(extractOpenBossResume(detail), expected)
   const inDetail = new Function('document', `return (${extractOpenBossResume.toString()})(document)`)
   assert.deepEqual(parseOpenResume(inDetail(detail)), expected)

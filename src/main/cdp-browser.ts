@@ -1,19 +1,94 @@
 import type { WebContents } from 'electron'
 import { randomBytes } from 'node:crypto'
-import { actOnBrowserFrame, inspectBrowserFrame, type BrowserFrameSnapshot } from './adapters/browser-use.js'
-import { beginBrowserVisual, restoreBrowserPointer } from './adapters/browser-visual.js'
+import {
+  actOnBrowserFrame,
+  inspectBrowserFrame,
+  type BrowserControl,
+  type BrowserFrameSnapshot,
+} from './adapters/browser-use.js'
+import { beginBrowserVisual, markBrowserVisualDispatched, restoreBrowserPointer, type PointerPoint } from './adapters/browser-visual.js'
 
 type Frame = { id: string; url: string; name?: string; parentId?: string }
 type FrameTree = { frame: Frame; childFrames?: FrameTree[] }
 type Context = { id: number; session?: string; frame: Frame; key: string; parent?: Context }
-type Snapshot = BrowserFrameSnapshot & { path: string; accessibility: Array<{ role: string; name: string }> }
+export interface BrowserAccessibilityNode {
+  id: string
+  parentId: string | null
+  role: string
+  name: string
+  value?: string
+  description?: string
+  states: Record<string, string | number | boolean>
+}
+export interface BrowserAccessibilitySnapshot {
+  mode: 'full' | 'diff'
+  revision: number
+  rootIds?: string[]
+  nodes?: BrowserAccessibilityNode[]
+  added?: BrowserAccessibilityNode[]
+  changed?: BrowserAccessibilityNode[]
+  removed?: string[]
+}
+export type BrowserWaitCondition =
+  | { type: 'control_value'; ref: string; value: string; timeoutMs?: number }
+  | { type: 'control_state'; ref: string; state: 'checked' | 'expanded'; value: string | boolean; timeoutMs?: number }
+  | { type: 'control_present'; ref: string; timeoutMs?: number }
+  | { type: 'control_absent'; ref: string; timeoutMs?: number }
+  | { type: 'text_contains'; frame?: string; value: string; timeoutMs?: number }
+  | { type: 'text_absent'; frame?: string; value: string; timeoutMs?: number }
+  | { type: 'url_path'; value: string; timeoutMs?: number }
+  | { type: 'url_changed'; timeoutMs?: number }
+export interface BrowserActionReceipt {
+  receiptId: string
+  action: string
+  target: { ref?: string; frame: string; label?: string; kind?: string }
+  before: { urlPath: string; control?: Partial<BrowserControl> }
+  dispatch: { confirmed: boolean; at: string; mechanism: 'cdp_input' | 'dom_api'; trustedInput: boolean }
+  presentation: { cursorShown: boolean; purpose: 'visualization_only'; target?: PointerPoint }
+  wait: { requested: boolean; condition?: BrowserWaitCondition; satisfied: boolean; elapsedMs: number; evidence: string }
+  after: { urlPath: string; control?: Partial<BrowserControl> }
+  durationMs: number
+}
+type Snapshot = BrowserFrameSnapshot & { path: string; accessibility: BrowserAccessibilitySnapshot }
 const state = '__agenthrCdpNodes'
+
+export function buildAccessibilitySnapshot(key: string, rawNodes: any[], revision: number, previous?: Map<string, BrowserAccessibilityNode>): { snapshot: BrowserAccessibilitySnapshot; current: Map<string, BrowserAccessibilityNode> } {
+  const compact = (value: unknown, limit = 300) => String(value ?? '').replace(/\s+/gu, ' ').trim().slice(0, limit)
+  const allowedStates = new Set(['busy', 'checked', 'disabled', 'expanded', 'focused', 'level', 'multiselectable', 'orientation', 'pressed', 'readonly', 'required', 'selected'])
+  const nodes = rawNodes.filter(node => !node.ignored).slice(0, 600).map(node => {
+    const states: Record<string, string | number | boolean> = {}
+    for (const property of node.properties ?? []) {
+      if (!allowedStates.has(String(property.name))) continue
+      const value = property.value?.value
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') states[String(property.name)] = value
+    }
+    const id = `${key}:ax:${String(node.nodeId)}`
+    return { id, parentId: node.parentId ? `${key}:ax:${String(node.parentId)}` : null,
+      role: compact(node.role?.value, 80), name: compact(node.name?.value),
+      ...(node.value?.value === undefined ? {} : { value: compact(node.value.value, 500) }),
+      ...(node.description?.value === undefined ? {} : { description: compact(node.description.value, 500) }), states } satisfies BrowserAccessibilityNode
+  })
+  const current = new Map(nodes.map(node => [node.id, node]))
+  const rootIds = nodes.filter(node => !node.parentId || !current.has(node.parentId)).map(node => node.id)
+  if (!previous) return { snapshot: { mode: 'full', revision, rootIds, nodes }, current }
+  const added: BrowserAccessibilityNode[] = [], changed: BrowserAccessibilityNode[] = []
+  for (const node of nodes) {
+    const before = previous.get(node.id)
+    if (!before) added.push(node)
+    else if (JSON.stringify(before) !== JSON.stringify(node)) changed.push(node)
+  }
+  const removed = [...previous.keys()].filter(id => !current.has(id))
+  return { snapshot: { mode: 'diff', revision, rootIds, added, changed, removed }, current }
+}
 
 /** A private CDP transport for this WebContents only. No debugging port or arbitrary agent scripts. */
 export class CdpBrowser {
   private contexts = new Map<string, Context>()
   private signatures = new Map<string, string>()
+  private controls = new Map<string, BrowserControl>()
   private sessions = new Map<string, string>()
+  private accessibility = new Map<string, Map<string, BrowserAccessibilityNode>>()
+  private accessibilityRevision = 0
   private snapshotId = ''
   private snapshotUrl = ''
   private owned = false
@@ -29,7 +104,7 @@ export class CdpBrowser {
       for (const [id, session] of this.sessions) if (session === params.sessionId) this.sessions.delete(id)
     }
   }
-  private readonly detached = () => { this.contexts.clear(); this.sessions.clear(); this.snapshotId = ''; this.owned = false }
+  private readonly detached = () => { this.contexts.clear(); this.controls.clear(); this.sessions.clear(); this.accessibility.clear(); this.snapshotId = ''; this.owned = false }
 
   constructor(private readonly contents: WebContents, private readonly allowed: (url: string) => boolean) {
     contents.debugger.on('detach', this.detached)
@@ -88,6 +163,10 @@ export class CdpBrowser {
     } finally { await this.command('Runtime.releaseObject', { objectId }, context.parent.session).catch(() => {}) }
   }
 
+  private accessibilitySnapshot(key: string, rawNodes: any[], revision: number, previous: Map<string, BrowserAccessibilityNode> | undefined): { snapshot: BrowserAccessibilitySnapshot; current: Map<string, BrowserAccessibilityNode> } {
+    return buildAccessibilitySnapshot(key, rawNodes, revision, previous)
+  }
+
   async snapshot(): Promise<{ snapshotId: string; engine: 'cdp'; frames: Snapshot[]; warnings: string[] }> {
     if (this.busy) throw new Error('浏览器操作进行中，请等待完成后读取快照')
     this.busy = true
@@ -100,6 +179,10 @@ export class CdpBrowser {
     this.snapshotId = ''
     this.contexts.clear()
     this.signatures.clear()
+    this.controls.clear()
+    const previousAccessibility = this.snapshotUrl === url ? this.accessibility : new Map<string, Map<string, BrowserAccessibilityNode>>()
+    const nextAccessibility = new Map<string, Map<string, BrowserAccessibilityNode>>()
+    const accessibilityRevision = this.accessibilityRevision + 1
     await this.command('Page.enable')
     // Auto-attach is scoped to this WebContents and its descendants, never unrelated tabs.
     await this.command('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true })
@@ -124,6 +207,7 @@ export class CdpBrowser {
     const domSnapshots = new Map<string, Promise<any>>()
     let textBudget = 64_000
     let controlBudget = 800
+    let accessibilityBudget = 1_200
     let count = 0
     const visit = async (tree: FrameTree, parent?: Context): Promise<void> => {
       if (!this.allowed(tree.frame.url)) return
@@ -154,13 +238,17 @@ export class CdpBrowser {
           globalThis.${state} ||= { nodes: new Map(), ids: new WeakMap(), next: 0 };
           Object.assign(globalThis.${state}, { extras: new Set(), names: new WeakMap(), blocked: new WeakMap() });
         })()`)
-        // Accessibility names complement DOM text, including labels outside input elements.
-        let accessibility: Snapshot['accessibility'] = []
+        // Preserve the semantic AX hierarchy and emit a bounded diff after the first snapshot.
+        let accessibility: Snapshot['accessibility'] = { mode: 'full', revision: accessibilityRevision, rootIds: [], nodes: [] }
         const extraNodes = new Map<number, string>()
         try {
           const ax = await this.command('Accessibility.getFullAXTree', { frameId: tree.frame.id }, session)
-          accessibility = ax.nodes.filter((node: any) => !node.ignored && node.name?.value && !['StaticText', 'InlineTextBox'].includes(node.role?.value))
-            .slice(0, 200).map((node: any) => ({ role: String(node.role?.value || ''), name: String(node.name.value).slice(0, 160) }))
+          const semanticNodes = ax.nodes.filter((node: any) => !node.ignored).slice(0, Math.max(0, accessibilityBudget))
+          if (ax.nodes.filter((node: any) => !node.ignored).length > semanticNodes.length) warnings.push(`${key}：无障碍树超过本次 1200 节点总预算，已截断`)
+          accessibilityBudget -= semanticNodes.length
+          const built = this.accessibilitySnapshot(key, semanticNodes, accessibilityRevision, previousAccessibility.get(key))
+          accessibility = built.snapshot
+          nextAccessibility.set(key, built.current)
           for (const node of ax.nodes) {
             const role = String(node.role?.value || '')
             const name = String(node.name?.value || '').slice(0, 160)
@@ -206,7 +294,7 @@ export class CdpBrowser {
         textBudget -= snapshot.text.length
         controlBudget -= snapshot.controls.length
         this.contexts.set(key, context)
-        for (const control of snapshot.controls) this.signatures.set(control.ref, control.signature)
+        for (const control of snapshot.controls) { this.signatures.set(control.ref, control.signature); this.controls.set(control.ref, control) }
         frames.push({ ...snapshot, path: new URL(tree.frame.url).pathname, accessibility })
         for (const child of tree.childFrames || []) await visit(child, context)
       } catch (error) {
@@ -217,11 +305,137 @@ export class CdpBrowser {
     await visit(frameTree)
     if (this.contents.getURL() !== url) throw new Error('读取时页面已导航，请重试')
     this.snapshotUrl = url
+    this.accessibility = nextAccessibility
+    this.accessibilityRevision = accessibilityRevision
     this.snapshotId = randomBytes(12).toString('hex')
     return { snapshotId: this.snapshotId, engine: 'cdp', frames, warnings }
   }
 
-  async act(input: { snapshotId: string; action: string; ref?: string; value?: string; frame?: string }): Promise<{ done: boolean; action: string; verification: string }> {
+  private async dispatchTrustedPointer(
+    context: Context,
+    objectId: string,
+    action: 'click' | 'hover',
+    options: { enforceBlockedReason: boolean; previousPointer?: PointerPoint | null; visualDurationMs?: number } = { enforceBlockedReason: true },
+  ): Promise<{ point: PointerPoint; visualPoint?: PointerPoint }> {
+    let visualPoint: PointerPoint | undefined
+    if (options.visualDurationMs !== undefined) {
+      const visual = await this.call(context, objectId, `async function(previous, duration) {
+        const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
+        const beginBrowserVisual = ${beginBrowserVisual.toString()};
+        const result = await beginBrowserVisual(document, this, previous, duration);
+        return { point: result.point };
+      }`, [options.previousPointer ?? null, options.visualDurationMs]) as { point: PointerPoint }
+      visualPoint = visual.point
+    }
+    let point = await this.call(context, objectId, `function(enforceBlockedReason) {
+      if (!this.isConnected) throw new Error('目标元素已移除');
+      const r=this.getBoundingClientRect();
+      const x=(Math.max(0,r.left)+Math.min(innerWidth,r.right))/2;
+      const y=(Math.max(0,r.top)+Math.min(innerHeight,r.bottom))/2;
+      const hit=this.getRootNode().elementFromPoint(x,y);
+      if (!hit || !(this===hit || this.contains(hit))) throw new Error('目标被遮挡或不在可视区域');
+      if (enforceBlockedReason) for(let node=hit;node;node=node.parentElement) {
+        const reason=globalThis.${state}.blocked.get(node);
+        if(reason) throw new Error(reason);
+        if(node===this) break;
+      }
+      return {x,y};
+    }`, [options.enforceBlockedReason]) as PointerPoint
+    for (let child = context; child.parent; child = child.parent) {
+      const owner = await this.owner(child)
+      try {
+        point = await this.call(child.parent, owner, `function(p) {
+          const r=this.getBoundingClientRect();
+          const sx=r.width/this.offsetWidth, sy=r.height/this.offsetHeight;
+          const x=r.left+(this.clientLeft+p.x)*sx, y=r.top+(this.clientTop+p.y)*sy;
+          const hit=this.getRootNode().elementFromPoint(x,y);
+          if(hit!==this) throw new Error('目标框架被遮挡或超出可视区域');
+          return {x,y};
+        }`, [point])
+      } finally { await this.command('Runtime.releaseObject', { objectId: owner }, child.parent.session).catch(() => {}) }
+    }
+    if (action === 'click') await this.call(context, objectId, `function() {
+      const registry=globalThis.${state};
+      registry.clickReceived=false;
+      const target=this;
+      registry.clickListener=event=>{if(event.isTrusted && event.composedPath().includes(target))registry.clickReceived=true;};
+      document.addEventListener('click',registry.clickListener,true);
+    }`)
+    await this.command('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point })
+    if (action === 'click') {
+      await this.command('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 })
+      await this.command('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 })
+    }
+    await this.evaluate(context, `(${markBrowserVisualDispatched.toString()})(document)`).catch(() => {})
+    await this.evaluate(context, 'new Promise(resolve => { const t=setTimeout(resolve,100); requestAnimationFrame(()=>{clearTimeout(t);resolve()}) })')
+    if (action === 'click' && !await this.evaluate(context, `globalThis.${state}.clickReceived`)) {
+      throw new Error('未确认目标收到可信点击事件，请重新读取页面核对状态，不要直接重复点击')
+    }
+    return { point, ...(visualPoint ? { visualPoint } : {}) }
+  }
+
+  /**
+   * Runs a trusted, application-owned target resolver and dispatches one real CDP click.
+   * Resolver code is bundled with AgentHR and is never accepted from an Agent/tool argument.
+   */
+  async clickResolvedTarget<T>(input: {
+    action: string
+    label: string
+    resolver: (doc: Document, value: T) => HTMLElement | null
+    value: T
+    previousPointer?: PointerPoint | null
+    visualDurationMs?: number
+  }): Promise<{ pointer: PointerPoint; receipt: BrowserActionReceipt }> {
+    await this.snapshot()
+    if (this.busy) throw new Error('浏览器操作进行中，请等待完成')
+    const matches: Array<{ context: Context; objectId: string }> = []
+    for (const context of this.contexts.values()) {
+      try {
+        const object = await this.evaluate(context, `(${input.resolver.toString()})(document, ${JSON.stringify(input.value)})`, false)
+        if (object.objectId && object.subtype !== 'null') matches.push({ context, objectId: object.objectId })
+      } catch { /* A resolver only matches its own platform frame. */ }
+    }
+    if (matches.length !== 1) {
+      await Promise.all(matches.map(match => this.command('Runtime.releaseObject', { objectId: match.objectId }, match.context.session).catch(() => {})))
+      throw new Error(matches.length ? '识别到多个操作目标，已拒绝点击' : '操作目标已变化，请重新读取页面')
+    }
+    const { context, objectId } = matches[0]
+    const started = Date.now()
+    const beforeUrlPath = new URL(this.contents.getURL()).pathname
+    this.busy = true
+    try {
+      await this.command('Page.bringToFront')
+      this.contents.focus()
+      for (let frame: Context | undefined = context; frame; frame = frame.parent) {
+        if (!(await this.visible(frame))) throw new Error('目标框架已隐藏，请重新读取当前页面')
+      }
+      const dispatched = await this.dispatchTrustedPointer(context, objectId, 'click', {
+        enforceBlockedReason: false, previousPointer: input.previousPointer, visualDurationMs: input.visualDurationMs ?? 650,
+      })
+      const dispatchedAt = new Date().toISOString()
+      const afterUrlPath = (() => { try { return new URL(this.contents.getURL()).pathname } catch { return '' } })()
+      const receipt: BrowserActionReceipt = {
+        receiptId: randomBytes(12).toString('hex'), action: input.action,
+        target: { frame: context.key, label: input.label },
+        before: { urlPath: beforeUrlPath },
+        dispatch: { confirmed: true, at: dispatchedAt, mechanism: 'cdp_input', trustedInput: true },
+        presentation: { cursorShown: true, purpose: 'visualization_only', target: dispatched.visualPoint ?? dispatched.point },
+        wait: { requested: false, satisfied: true, elapsedMs: 0, evidence: '已确认目标收到 isTrusted 点击事件；业务结果需由调用方继续验证' },
+        after: { urlPath: afterUrlPath }, durationMs: Date.now() - started,
+      }
+      return { pointer: dispatched.visualPoint ?? dispatched.point, receipt }
+    } finally {
+      await this.evaluate(context, `(() => {
+        document.querySelectorAll('[data-agenthr-visual="border"]').forEach(node=>node.remove());
+        const registry=globalThis.${state};
+        if(registry?.clickListener){document.removeEventListener('click',registry.clickListener,true);delete registry.clickListener;}
+      })()`).catch(() => {})
+      await this.command('Runtime.releaseObject', { objectId }, context.session).catch(() => {})
+      this.busy = false
+    }
+  }
+
+  async act(input: { snapshotId: string; action: string; ref?: string; value?: string; frame?: string; wait?: BrowserWaitCondition }): Promise<{ done: boolean; action: string; verified: boolean; verification: string; receipt: BrowserActionReceipt }> {
     if (this.busy) throw new Error('浏览器操作进行中，请等待完成')
     if (!this.snapshotId || input.snapshotId !== this.snapshotId || this.contents.getURL() !== this.snapshotUrl) throw new Error('页面快照已过期，请重新读取')
     const scrolling = input.action === 'scroll_up' || input.action === 'scroll_down'
@@ -229,6 +443,19 @@ export class CdpBrowser {
     const context = key ? this.contexts.get(key) : undefined
     const signature = input.ref ? this.signatures.get(input.ref) : undefined
     if (!context || (!scrolling && !signature)) throw new Error('控件或框架引用无效，请重新读取')
+    const started = Date.now()
+    const startedAt = new Date(started).toISOString()
+    const beforeUrlPath = new URL(this.contents.getURL()).pathname
+    const beforeControl = input.ref ? this.controls.get(input.ref) : undefined
+    const summarizeControl = (control: BrowserControl | undefined): Partial<BrowserControl> | undefined => control ? {
+      ref: control.ref, kind: control.kind, label: control.label, value: control.value, checked: control.checked, expanded: control.expanded,
+    } : undefined
+    const inspectControl = async (ref: string): Promise<BrowserControl | undefined> => {
+      const targetContext = this.contexts.get(ref.split(':n')[0])
+      if (!targetContext) return undefined
+      return this.evaluate(targetContext, `(${inspectBrowserFrame.toString()})(document, ${JSON.stringify(targetContext.key)}, globalThis.${state}).controls.find(control => control.ref === ${JSON.stringify(ref)})`)
+    }
+    const currentPath = (): string => { try { return new URL(this.contents.getURL()).pathname } catch { return '' } }
     this.busy = true
     let objectId: string | undefined
     try {
@@ -242,6 +469,7 @@ export class CdpBrowser {
       const prepared = await this.evaluate(context, `(() => {
         const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
         const beginBrowserVisual = ${beginBrowserVisual.toString()};
+        const markBrowserVisualDispatched = ${markBrowserVisualDispatched.toString()};
         const inspectBrowserFrame = ${inspectBrowserFrame.toString()};
         return (${actOnBrowserFrame.toString()})(document, ${JSON.stringify(action)}, ${JSON.stringify(signature || '')}, 200, null, globalThis.${state}, ${input.action !== 'select'});
       })()`)
@@ -257,51 +485,7 @@ export class CdpBrowser {
         objectId = object.objectId
         if (!objectId) throw new Error('目标元素已移除，请重新读取')
         if (input.action === 'click' || input.action === 'hover') {
-          let point = await this.call(context, objectId, `function() {
-            if (!this.isConnected) throw new Error('目标元素已移除');
-            const r = this.getBoundingClientRect();
-            const x = (Math.max(0,r.left)+Math.min(innerWidth,r.right))/2;
-            const y = (Math.max(0,r.top)+Math.min(innerHeight,r.bottom))/2;
-            const root = this.getRootNode();
-            const hit = root.elementFromPoint(x,y);
-            if (!hit || !(this === hit || this.contains(hit))) throw new Error('目标被遮挡或不在可视区域');
-            for(let node=hit;node;node=node.parentElement) {
-              const reason=globalThis.${state}.blocked.get(node);
-              if(reason) throw new Error(reason);
-              if(node===this) break;
-            }
-            return {x,y};
-          }`)
-          // Convert frame-local coordinates to the top-level viewport; also hit-test frame owners.
-          for (let child = context; child.parent; child = child.parent) {
-            const owner = await this.owner(child)
-            try {
-              point = await this.call(child.parent, owner, `function(p) {
-                const r=this.getBoundingClientRect();
-                const sx=r.width/this.offsetWidth, sy=r.height/this.offsetHeight;
-                const x=r.left+(this.clientLeft+p.x)*sx, y=r.top+(this.clientTop+p.y)*sy;
-                const hit=this.getRootNode().elementFromPoint(x,y);
-                if(hit!==this) throw new Error('目标框架被遮挡或超出可视区域');
-                return {x,y};
-              }`, [point])
-            } finally { await this.command('Runtime.releaseObject', { objectId: owner }, child.parent.session).catch(() => {}) }
-          }
-          if (input.action === 'click') await this.call(context, objectId, `function() {
-            const registry=globalThis.${state};
-            registry.clickReceived=false;
-            const target=this;
-            registry.clickListener=event=>{if(event.isTrusted && event.composedPath().includes(target))registry.clickReceived=true;};
-            document.addEventListener('click',registry.clickListener,true);
-          }`)
-          await this.command('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point })
-          if (input.action === 'click') {
-            await this.command('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 })
-            await this.command('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 })
-          }
-          await this.evaluate(context, 'new Promise(resolve => { const t=setTimeout(resolve,100); requestAnimationFrame(()=>{clearTimeout(t);resolve()}) })')
-          if (input.action === 'click' && !await this.evaluate(context, `globalThis.${state}.clickReceived`)) {
-            throw new Error('未确认目标收到点击事件，请重新读取页面核对状态，不要直接重复点击')
-          }
+          await this.dispatchTrustedPointer(context, objectId, input.action, { enforceBlockedReason: true })
         } else if (input.action === 'fill') {
           await this.call(context, objectId, `function() {
             this.focus();
@@ -320,7 +504,64 @@ export class CdpBrowser {
           await this.command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
         }
       }
-      return { done: true, action: input.action, verification: '动作已执行；请读取新快照核对城市、输入值、搜索结果或详情状态，不能据此断言业务操作成功。' }
+      const dispatchedAt = new Date().toISOString()
+      const waitStarted = Date.now()
+      const wait = input.wait
+      const timeoutMs = wait?.timeoutMs ?? 3_000
+      let satisfied = !wait
+      let evidence = wait ? '等待条件尚未满足' : '未请求等待条件；仅确认输入事件已发送'
+      const checkWait = async (): Promise<{ satisfied: boolean; evidence: string }> => {
+        if (!wait) return { satisfied: true, evidence }
+        if (wait.type === 'url_changed') {
+          const path = currentPath()
+          return { satisfied: path !== beforeUrlPath, evidence: `当前路径：${path || '不可用'}；动作前：${beforeUrlPath}` }
+        }
+        if (wait.type === 'url_path') {
+          const path = currentPath()
+          return { satisfied: path === wait.value, evidence: `当前路径：${path || '不可用'}` }
+        }
+        if (wait.type === 'text_contains' || wait.type === 'text_absent') {
+          const waitContext = this.contexts.get(wait.frame || context.key)
+          if (!waitContext) return { satisfied: false, evidence: '等待目标框架不可用' }
+          try {
+            const text = String(await this.evaluate(waitContext, `(${inspectBrowserFrame.toString()})(document, ${JSON.stringify(waitContext.key)}, globalThis.${state}).text`))
+            const present = text.includes(wait.value)
+            return { satisfied: wait.type === 'text_contains' ? present : !present, evidence: `文本“${wait.value}”${present ? '已出现' : '未出现'}` }
+          } catch { return { satisfied: false, evidence: '页面执行上下文已变化，请重新读取快照' } }
+        }
+        let control: BrowserControl | undefined
+        try { control = await inspectControl(wait.ref) } catch { control = undefined }
+        if (wait.type === 'control_present' || wait.type === 'control_absent') {
+          const present = Boolean(control)
+          return { satisfied: wait.type === 'control_present' ? present : !present, evidence: `控件 ${wait.ref} ${present ? '存在' : '不存在'}` }
+        }
+        if (!control) return { satisfied: false, evidence: `控件 ${wait.ref} 不可用` }
+        if (wait.type === 'control_value') return { satisfied: control.value === wait.value, evidence: `当前值：${control.value ?? ''}` }
+        const actual = wait.state === 'checked' ? control.checked : control.expanded
+        return { satisfied: String(actual) === String(wait.value), evidence: `${wait.state}：${String(actual)}` }
+      }
+      do {
+        const result = await checkWait()
+        satisfied = result.satisfied
+        evidence = result.evidence
+        if (satisfied || !wait || Date.now() - waitStarted >= timeoutMs) break
+        await new Promise(resolveWait => setTimeout(resolveWait, 100))
+      } while (true)
+      let afterControl: BrowserControl | undefined
+      if (input.ref) try { afterControl = await inspectControl(input.ref) } catch { /* navigation invalidated the old context */ }
+      const receipt: BrowserActionReceipt = {
+        receiptId: randomBytes(12).toString('hex'), action: input.action,
+        target: { ...(input.ref ? { ref: input.ref } : {}), frame: context.key, ...(beforeControl?.label ? { label: beforeControl.label } : {}), ...(beforeControl?.kind ? { kind: beforeControl.kind } : {}) },
+        before: { urlPath: beforeUrlPath, ...(beforeControl ? { control: summarizeControl(beforeControl) } : {}) },
+        dispatch: { confirmed: true, at: dispatchedAt,
+          mechanism: input.action === 'select' || scrolling ? 'dom_api' : 'cdp_input',
+          trustedInput: input.action !== 'select' && !scrolling },
+        presentation: { cursorShown: Boolean(prepared.pointer), purpose: 'visualization_only', ...(prepared.pointer ? { target: prepared.pointer } : {}) },
+        wait: { requested: Boolean(wait), ...(wait ? { condition: wait } : {}), satisfied, elapsedMs: Date.now() - waitStarted, evidence },
+        after: { urlPath: currentPath(), ...(afterControl ? { control: summarizeControl(afterControl) } : {}) }, durationMs: Date.now() - started,
+      }
+      return { done: true, action: input.action, verified: satisfied,
+        verification: satisfied ? (wait ? `动作已执行且等待条件已满足：${evidence}` : '动作输入已确认发送；未请求业务状态等待条件。') : `动作输入已发送，但等待条件超时：${evidence}。请读取新快照诊断，不要直接重复动作。`, receipt }
     } finally {
       await this.evaluate(context, `(() => { const registry=globalThis.${state}; if(registry?.clickListener){document.removeEventListener('click',registry.clickListener,true);delete registry.clickListener;} })()`).catch(() => {})
       if (objectId) await this.command('Runtime.releaseObject', { objectId }, context.session).catch(() => {})

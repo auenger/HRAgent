@@ -6,3 +6,4 @@ release/
 .env.*
 !.env.example
 goodhr/
+reports/

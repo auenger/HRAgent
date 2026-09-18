@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { parseHTML } from 'linkedom'
-import { extractLiepinPreviews, extractOpenLiepinResume, parseCandidatePreviews, parseOpenResume } from '../dist/main/adapters/liepin.js'
+import { extractLiepinPreviews, extractOpenLiepinResume, parseCandidatePreviews, parseOpenResume, parseResumeProfile } from '../dist/main/adapters/liepin.js'
 
 test('Liepin card extraction is read-only, bounded and self-contained for the renderer', () => {
   const { document } = parseHTML(`
@@ -28,7 +28,8 @@ test('an already-open Liepin resume modal is read without clicking or reading pa
       <section>动物实验经验；是否操作过 tMCAO 尚未说明。</section>
     </div>
   `)
-  const expected = { name: '示例候选人', text: '示例候选人 动物实验经验；是否操作过 tMCAO 尚未说明。' }
+  const expected = { name: '示例候选人', text: '示例候选人 动物实验经验；是否操作过 tMCAO 尚未说明。',
+    currentCompany: '', currentTitle: '', location: '', expectedSalary: '', expectedPosition: '' }
   const result = extractOpenLiepinResume(document)
   assert.deepEqual(result, expected)
   const inPage = new Function('document', `return (${extractOpenLiepinResume.toString()})(document)`)
@@ -70,12 +71,68 @@ test('Liepin search detail recovers the displayed name next to the activity mark
   const { document } = parseHTML(`
     <aside class="resume-detail-panel">
       <div>中文</div><div>EN</div><div>快速定位：</div><div>生物信息</div><div>(12)</div>
-      <div>查看大图</div><div>刘聪</div><div>3天内活跃</div><div>更新简历时间：2026.07.17</div>
+      <div>查看大图</div><div>李明</div><div>3天内活跃</div><div>更新简历时间：2026.07.17</div>
       <section>求职意向：苏州 生物信息工程师</section>
       <section>工作经历：十年生物信息分析经验。</section>
       <section>项目经历：负责 RNA-seq 和 WES 分析。</section>
       <section>教育经历：武汉大学微生物学硕士。</section>
     </aside>
   `)
-  assert.equal(extractOpenLiepinResume(document).name, '刘聪')
+  assert.equal(extractOpenLiepinResume(document).name, '李明')
+})
+
+test('resume parsing rejects activity text as a name and extracts talent-pool fields', () => {
+  const text = `今天活跃
+姓名：李明
+现居地：苏州
+求职意向
+期望职位：生物信息工程师
+期望薪资：25-35k
+工作经历
+2022.03-至今
+示例生物科技有限公司
+高级生物信息工程师
+工作内容：负责 RNA-seq 分析
+教育经历
+武汉大学 硕士`
+  assert.deepEqual(parseResumeProfile(text), {
+    name: '李明', currentCompany: '示例生物科技有限公司', currentTitle: '高级生物信息工程师', location: '苏州',
+    expectedSalary: '25-35k', expectedPosition: '生物信息工程师',
+  })
+  assert.deepEqual(parseOpenResume({ name: '今天活跃', text }), {
+    name: '李明', text, currentCompany: '示例生物科技有限公司', currentTitle: '高级生物信息工程师', location: '苏州',
+    expectedSalary: '25-35k', expectedPosition: '生物信息工程师',
+  })
+})
+
+test('resume parsing supports Liepin positional header, intention and employment fields', () => {
+  const text = `快速定位：
+生物信息
+(11)
+查看大图
+江先生（TA设置了姓名保护）
+在线
+更新简历时间：2026.06.05
+苏州
+工作8年
+34 岁
+离职，正在找工作
+华北电力大学 · 应用数学 · 硕士 · 统招
+求职意向
+生物信息工程师
+30-35k×14薪
+上海
+制药
+医疗机构
+个人作品
+工作经历
+迪辅乐生物
+生信负责人/高级生物信息研究员
+2022.03-至今 (4年6个月)
+工作描述：搭建生物信息计算平台
+教育经历`
+  assert.deepEqual(parseResumeProfile(text), {
+    name: '', currentCompany: '迪辅乐生物', currentTitle: '生信负责人/高级生物信息研究员', location: '苏州',
+    expectedSalary: '30-35k×14薪', expectedPosition: '生物信息工程师',
+  })
 })

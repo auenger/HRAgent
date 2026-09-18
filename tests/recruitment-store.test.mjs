@@ -40,10 +40,16 @@ test('resume sources, applications, tasks and audit events are durable and bound
   const store = new RecruitmentStore(dir)
   const jobId = '22222222-2222-4222-8222-222222222222'
   try {
-    const candidate = store.captureResume({ name: '周砚', text: '五年 Java 服务端研发经验。' }, 'liepin', 'https://lpt.liepin.com/recommend', jobId, 'assessment-1')
+    const resume = { name: '周砚', text: '五年 Java 服务端研发经验。', currentCompany: '澄明科技', currentTitle: '高级 Java 工程师',
+      location: '上海', expectedSalary: '35-45k', expectedPosition: 'Java 技术专家' }
+    const candidate = store.captureResume(resume, 'liepin', 'https://lpt.liepin.com/recommend', jobId, 'assessment-1')
     assert.equal(candidate.stage, 'screening')
+    assert.deepEqual({ company: candidate.currentCompany, title: candidate.currentTitle, location: candidate.location,
+      salary: candidate.expectedSalary, position: candidate.expectedPosition },
+    { company: '澄明科技', title: '高级 Java 工程师', location: '上海', salary: '35-45k', position: 'Java 技术专家' })
     assert.deepEqual(store.listCandidates(100, jobId).map(item => item.id), [candidate.id])
-    assert.equal(store.captureResume({ name: '周砚', text: '五年 Java 服务端研发经验。' }, 'liepin', 'https://lpt.liepin.com/recommend', jobId).id, candidate.id)
+    assert.equal(store.captureResume({ ...resume, currentTitle: '' }, 'liepin', 'https://lpt.liepin.com/recommend', jobId).id, candidate.id)
+    assert.equal(store.getCandidate(candidate.id).currentTitle, '高级 Java 工程师')
     assert.equal(store.setApplicationStage(candidate.id, jobId, 'interview').stage, 'interview')
     assert.ok(store.listEvents().some(event => event.type === 'application.stage_changed'))
     const task = store.createTask({ jobId, type: 'search', platform: 'liepin', title: '寻找 Java 后端候选人', description: '在猎聘寻找上海 Java 后端候选人，并汇总匹配证据。', workspacePaths: ['inputs/job.md'] })
@@ -105,6 +111,93 @@ test('platform validation history stores bounded outcomes without page content',
     assert.deepEqual(store.listPlatformValidations(), [passed])
     assert.throws(() => store.recordPlatformValidation('liepin', 'candidate_list', 'passed', '', runId), /摘要不能为空/)
     assert.throws(() => store.recordPlatformValidation('other', 'candidate_list', 'passed', '错误平台', runId), /格式无效/)
+  } finally {
+    store.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('built-in recruitment skills are versioned, controllable and create audited runs', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agenthr-skills-'))
+  const store = new RecruitmentStore(dir)
+  const jobId = '99999999-9999-4999-8999-999999999999'
+  try {
+    const skills = store.listSkills()
+    assert.equal(skills.length, 4)
+    assert.deepEqual(Object.fromEntries(['general', 'boss', 'liepin'].map(category => [category, skills.filter(item => item.category === category).length])),
+      { general: 2, boss: 1, liepin: 1 })
+    const skill = skills.find(item => item.key === 'liepin-search-and-save')
+    assert.ok(skill)
+    assert.equal(skill.status, 'enabled')
+    assert.equal(skill.activeVersion, 1)
+    assert.equal(skill.definition.steps.length, 4)
+    const disabled = store.setSkillStatus(skill.id, 'disabled', skill.updatedAt)
+    assert.equal(disabled.status, 'disabled')
+    assert.throws(() => store.setSkillStatus(skill.id, 'enabled', skill.updatedAt), /已变化/)
+    const enabled = store.setSkillStatus(skill.id, 'enabled', disabled.updatedAt)
+    const task = store.createTask({ jobId, type: 'search', platform: 'liepin', title: enabled.name, description: enabled.description })
+    const run = store.startSkillRun(enabled.id, task.id, { keyword: 'Java', city: '上海', maxCandidates: 8, minimumExperienceYears: 3 })
+    assert.equal(run.version, 1)
+    assert.equal(run.parameters.maxCandidates, 8)
+    assert.equal(store.listSkillRuns(enabled.id)[0].taskId, task.id)
+    assert.equal(store.getSkill(enabled.id).runCount, 1)
+    assert.ok(store.listEvents().some(event => event.type === 'skill.run_started' && event.entityId === enabled.id))
+    assert.throws(() => store.startSkillRun(enabled.id, task.id, { keyword: '', city: '上海', maxCandidates: 8 }), /搜索关键词不能为空/)
+    store.setTaskStatus(task.id, 'completed')
+    assert.equal(store.listSkillRuns(enabled.id)[0].status, 'completed')
+    assert.equal(store.getSkill(enabled.id).successCount, 1)
+  } finally {
+    store.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('successful task history is extracted into deduplicated skill drafts', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agenthr-skill-learning-'))
+  const store = new RecruitmentStore(dir)
+  const jobId = '12121212-1212-4212-8212-121212121212'
+  try {
+    for (const suffix of ['A', 'B']) {
+      const task = store.createTask({ jobId, type: 'follow_up', platform: 'liepin', title: `候选人跟进报告 ${suffix}`,
+        description: '读取候选人已有分析，汇总证据并生成 Markdown 报告，不联系候选人。' })
+      store.appendTaskEntry(task.id, { kind: 'analysis', title: '汇总完成', content: `已读取候选人并生成报告 ${suffix}` })
+      store.setTaskStatus(task.id, 'completed')
+    }
+    const learned = store.listSkills().filter(skill => skill.status === 'draft' && skill.definition.taskType === 'follow_up')
+    assert.equal(learned.length, 1)
+    assert.equal(learned[0].sourceTaskCount, 2)
+    assert.ok(learned[0].definition.steps.some(step => step.id === 'report'))
+    assert.ok(store.listEvents().some(event => event.type === 'skill.source_merged'))
+  } finally {
+    store.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('skill runs persist step checkpoints and enter needs_repair after three failed runs', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agenthr-skill-repair-'))
+  const store = new RecruitmentStore(dir)
+  const jobId = '13131313-1313-4313-8313-131313131313'
+  try {
+    const skill = store.listSkills().find(item => item.key === 'analyze-open-resume')
+    assert.ok(skill)
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const task = store.createTask({ jobId, type: 'analyze', title: `分析失败 ${attempt}`, description: '分析当前简历' })
+      const run = store.startSkillRun(skill.id, task.id, {})
+      const initial = store.listSkillRunSteps(run.id)
+      assert.equal(initial.length, skill.definition.steps.length)
+      const started = store.recordSkillStep(task.id, { stepId: initial[0].stepId, status: 'running' })
+      assert.equal(started.fallbackRequired, false)
+      const failed = store.recordSkillStep(task.id, { stepId: initial[0].stepId, status: 'failed', evidence: '页面返回目标不存在', errorCode: 'TARGET_MISSING', errorMessage: '目标控件不存在' })
+      assert.equal(failed.fallbackRequired, true)
+      assert.match(failed.fallbackPrompt, /不要重复已完成步骤/)
+      assert.equal(store.getTask(task.id).status, 'paused')
+      store.setTaskStatus(task.id, 'failed', undefined, { code: 'FALLBACK_FAILED', message: 'Agent 回退后仍未恢复' })
+    }
+    const repaired = store.getSkill(skill.id)
+    assert.equal(repaired.consecutiveFailures, 3)
+    assert.equal(repaired.status, 'needs_repair')
+    assert.ok(store.listEvents().some(event => event.type === 'skill.needs_repair'))
   } finally {
     store.close()
     rmSync(dir, { recursive: true, force: true })

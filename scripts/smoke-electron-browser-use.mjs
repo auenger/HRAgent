@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { app, BrowserWindow, WebContentsView } from 'electron'
 import { actOnBrowserFrame, inspectBrowserFrame } from '../dist/main/adapters/browser-use.js'
-import { beginBrowserVisual, restoreBrowserPointer } from '../dist/main/adapters/browser-visual.js'
+import { beginBrowserVisual, markBrowserVisualDispatched, restoreBrowserPointer } from '../dist/main/adapters/browser-visual.js'
 
 app.whenReady().then(async () => {
   const window = new BrowserWindow({ show: true, width: 900, height: 650 })
@@ -45,6 +45,7 @@ app.whenReady().then(async () => {
     const act = (action, signature) => view.webContents.executeJavaScript(`(() => {
       const restoreBrowserPointer = ${restoreBrowserPointer.toString()};
       const beginBrowserVisual = ${beginBrowserVisual.toString()};
+      const markBrowserVisualDispatched = ${markBrowserVisualDispatched.toString()};
       const inspectBrowserFrame = ${inspectBrowserFrame.toString()};
       return (${actOnBrowserFrame.toString()})(document, ${JSON.stringify(action)}, ${JSON.stringify(signature)}, 0)
     })()`)

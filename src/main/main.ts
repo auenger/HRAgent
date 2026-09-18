@@ -42,6 +42,7 @@ let jobBriefStore: JobBriefStore
 let assessmentStore: AssessmentStore
 let recruitmentStore: RecruitmentStore
 let localWorkspace: WorkspaceStore
+let stopWorkspaceWatcher: (() => void) | undefined
 let quitting = false
 const appRunId = randomUUID()
 let agentBrowserActionInFlight = false
@@ -517,6 +518,7 @@ app.whenReady().then(async () => {
   assessmentStore = new AssessmentStore(app.getPath('userData'))
   recruitmentStore = new RecruitmentStore(app.getPath('userData'))
   localWorkspace = new WorkspaceStore(app.getPath('userData'))
+  stopWorkspaceWatcher = localWorkspace.watchChanges(() => window?.webContents.send('agenthr:workspace-changed'))
   bridge = new AgentHrBridge(
     () => browser ? { ...browser.getStatus(), active: true } : undefined,
     () => browser?.listVisibleCandidates() ?? Promise.reject(new Error('Browser unavailable')),
@@ -613,6 +615,17 @@ app.whenReady().then(async () => {
       window?.webContents.send('agenthr:records-changed')
       return detail
     },
+    () => browser?.captureDiagnosticScreenshot() ?? Promise.reject(new Error('招聘页面不可用')),
+    (id, value) => {
+      const result = recruitmentStore.recordSkillStep(id, value)
+      window?.webContents.send('agenthr:tasks-changed')
+      window?.webContents.send('agenthr:skills-changed')
+      window?.webContents.send('agenthr:records-changed')
+      if (result.fallbackRequired) setTimeout(() => {
+        void insertTaskPrompt(id, true).catch(error => console.error('[skill fallback]', error))
+      }, 0)
+      return result
+    },
   )
   const address = await bridge.start()
   dsh = new DshHost(app.getPath('userData'), address, (status: DshStatus) => {
@@ -671,6 +684,14 @@ app.whenReady().then(async () => {
     return files
   })
   ipcMain.handle('agenthr:list-workspace-files', () => localWorkspace.listFiles())
+  ipcMain.handle('agenthr:list-workspace-directory', (_event, path: unknown = '') => {
+    if (typeof path !== 'string' || path.length > 1000) throw new Error('工作目录路径无效')
+    return localWorkspace.listDirectory(path)
+  })
+  ipcMain.handle('agenthr:read-workspace-file', (_event, path: unknown) => {
+    if (typeof path !== 'string' || path.length < 1 || path.length > 1000) throw new Error('工作文件路径无效')
+    return localWorkspace.readFile(path)
+  })
   ipcMain.handle('agenthr:choose-workspace', async () => {
     if (!window) throw new Error('应用窗口不可用')
     const selection = await dialog.showOpenDialog(window, {
@@ -785,6 +806,38 @@ app.whenReady().then(async () => {
     const jobId = jobBriefStore.list().activeId
     return scope === 'active' ? (jobId ? recruitmentStore.listTasks(100, jobId) : []) : recruitmentStore.listTasks()
   })
+  ipcMain.handle('agenthr:list-skills', () => recruitmentStore.listSkills())
+  ipcMain.handle('agenthr:set-skill-status', (_event, id: unknown, status: unknown, expectedUpdatedAt: unknown) => {
+    if (typeof id !== 'string' || typeof expectedUpdatedAt !== 'string') throw new Error('技能版本无效')
+    const skill = recruitmentStore.setSkillStatus(id, status as 'enabled' | 'disabled', expectedUpdatedAt)
+    window?.webContents.send('agenthr:skills-changed')
+    window?.webContents.send('agenthr:records-changed')
+    return skill
+  })
+  ipcMain.handle('agenthr:run-skill', async (_event, id: unknown, parameters: unknown) => {
+    if (typeof id !== 'string') throw new Error('技能 ID 无效')
+    const skill = recruitmentStore.getSkill(id)
+    const jobId = jobBriefStore.list().activeId
+    if (!jobId) throw new Error('请先选择当前岗位')
+    const input = parameters && typeof parameters === 'object' && !Array.isArray(parameters) ? parameters as Record<string, unknown> : {}
+    const parameterText = skill.definition.parameters.map(parameter => `${parameter.label}：${String(input[parameter.key] ?? parameter.defaultValue)}`).join('\n')
+    const description = [
+      `通过招聘技能「${skill.name}」v${skill.activeVersion} 执行。`, skill.description,
+      parameterText ? `\n运行参数：\n${parameterText}` : '',
+      `\n执行步骤：\n${skill.definition.steps.map((step, index) => `${index + 1}. ${step.title}：${step.description}\n   验证：${step.verification}`).join('\n')}`,
+      `\n成功标准：\n${skill.definition.successCriteria.map(item => `- ${item}`).join('\n')}`,
+      `\n权限边界：\n${skill.definition.permissions.map(item => `- ${item}`).join('\n')}`,
+      `\n失败处理：${skill.definition.failureStrategy}`,
+    ].filter(Boolean).join('\n')
+    const task = recruitmentStore.createTask({ jobId, type: skill.definition.taskType, platform: skill.platform, title: skill.name, description })
+    const skillRun = recruitmentStore.startSkillRun(skill.id, task.id, input)
+    const updated = recruitmentStore.beginTaskRun(task.id)
+    await insertTaskPrompt(task.id, true)
+    window?.webContents.send('agenthr:skills-changed')
+    window?.webContents.send('agenthr:tasks-changed')
+    window?.webContents.send('agenthr:records-changed')
+    return { skillRun, task: updated }
+  })
   ipcMain.handle('agenthr:create-task', (_event, value: unknown) => {
     const task = recruitmentStore.createTask(withValidatedWorkspacePaths(value))
     window?.webContents.send('agenthr:tasks-changed')
@@ -813,7 +866,17 @@ app.whenReady().then(async () => {
     if (typeof id !== 'string' || typeof expectedUpdatedAt !== 'string') throw new Error('任务版本无效')
     const task = recruitmentStore.setTaskStatus(id, status as TaskStatus, expectedUpdatedAt)
     window?.webContents.send('agenthr:tasks-changed')
+    window?.webContents.send('agenthr:skills-changed')
     return task
+  })
+  ipcMain.handle('agenthr:record-skill-step', async (_event, id: unknown, value: unknown) => {
+    if (typeof id !== 'string') throw new Error('任务 ID 无效')
+    const result = recruitmentStore.recordSkillStep(id, value)
+    window?.webContents.send('agenthr:tasks-changed')
+    window?.webContents.send('agenthr:skills-changed')
+    window?.webContents.send('agenthr:records-changed')
+    if (result.fallbackRequired) await insertTaskPrompt(id, true)
+    return result
   })
   ipcMain.handle('agenthr:list-recruitment-events', () => recruitmentStore.listEvents())
   ipcMain.handle('agenthr:list-platform-validations', () => recruitmentStore.listPlatformValidations())
@@ -928,6 +991,7 @@ app.on('before-quit', event => {
   void (async () => {
     try { await dsh?.shutdown() } catch (error) { console.error('[DSH shutdown]', error) }
     try { await bridge?.stop() } catch (error) { console.error('[bridge shutdown]', error) }
+    try { stopWorkspaceWatcher?.() } catch (error) { console.error('[workspace watcher shutdown]', error) }
     try { assessmentStore?.close() } catch (error) { console.error('[database shutdown]', error) }
     try { recruitmentStore?.close() } catch (error) { console.error('[recruitment database shutdown]', error) }
   })().finally(() => app.quit())

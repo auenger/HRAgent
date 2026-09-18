@@ -1,4 +1,4 @@
-import { beginBrowserVisual, type PointerPoint } from './browser-visual.js'
+import { beginBrowserVisual, markBrowserVisualDispatched, type PointerPoint } from './browser-visual.js'
 
 export interface BrowserControl {
   ref: string
@@ -216,8 +216,9 @@ export async function actOnBrowserFrame(doc: Document, action: BrowserUseAction,
     } else if (action.type === 'press_enter') {
       element.focus()
     } else {
-      element.click()
+      return { done: false, action: 'native_input_required', reason: '点击和悬停必须由统一可信输入执行器派发' }
     }
+    markBrowserVisualDispatched(doc)
     return { done: true, action: action.type, pointer: visual.point }
   } finally {
     visual.border.remove()

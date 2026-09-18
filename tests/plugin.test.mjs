@@ -8,6 +8,12 @@ test('DSH plugin registers evidence analysis and one tightly gated BOSS greeting
   apply({
     tools: { register: tool => tools.push(tool) },
     systemPrompt: { section: section => prompts.push(section) },
+    attachments: {
+      readImageRequest: async () => { throw new Error('not used') },
+      imageHostPath: () => undefined,
+    },
+    subagents: {},
+    effect: () => () => {},
   })
   assert.deepEqual(tools.map(tool => tool.name), [
     'agenthr_get_workspace',
@@ -17,10 +23,12 @@ test('DSH plugin registers evidence analysis and one tightly gated BOSS greeting
     'agenthr_create_task',
     'agenthr_get_task',
     'agenthr_append_task_result',
+    'agenthr_record_skill_step',
     'agenthr_list_candidates',
     'agenthr_update_candidate',
     'agenthr_browser_status',
     'agenthr_browser_snapshot',
+    'agenthr_browser_visual_diagnosis',
     'agenthr_browser_action',
     'agenthr_open_recommendations',
     'agenthr_list_visible_candidates',

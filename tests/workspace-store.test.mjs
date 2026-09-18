@@ -25,6 +25,16 @@ test('workspace store keeps imports and downloads inside the selected directory'
     const saved = store.writeTextArtifact('candidates/candidate-1/resume.md', '# Resume')
     assert.equal(saved.path, 'candidates/candidate-1/resume.md')
     assert.equal(saved.content, '# Resume')
+    mkdirSync(join(workspace, 'node_modules', 'hidden-package'), { recursive: true })
+    writeFileSync(join(workspace, 'node_modules', 'hidden-package', 'index.js'), 'dependency')
+    mkdirSync(join(workspace, '.private'))
+    writeFileSync(join(workspace, '.private', 'secret.txt'), 'hidden')
+    const rootEntries = store.listDirectory()
+    assert.ok(rootEntries.some(entry => entry.kind === 'directory' && entry.name === 'candidates'))
+    assert.equal(rootEntries.some(entry => entry.name === 'node_modules'), false)
+    assert.ok(rootEntries.some(entry => entry.kind === 'directory' && entry.name === '.private'))
+    assert.deepEqual(store.listDirectory('candidates').map(entry => entry.name), ['candidate-1'])
+    assert.equal(store.readFile('candidates/candidate-1/resume.md').content, '# Resume')
     assert.throws(() => store.writeTextArtifact('../outside.md', 'no'), /工作文件必须位于工作目录中/)
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -46,6 +56,28 @@ test('DSH workspace binding preserves its v2 store and promotes the shared direc
     const rebound = JSON.parse(readFileSync(join(dshHome, 'storages', 'workspace.json'), 'utf8'))
     assert.equal(Object.keys(rebound.tables.workspaces).length, 1)
   } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('workspace change watcher observes files written outside AgentHR', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agenthr-workspace-watch-'))
+  const userData = join(root, 'user-data')
+  const workspace = join(root, 'work')
+  mkdirSync(workspace)
+  const store = new WorkspaceStore(userData, workspace)
+  let stop = () => {}
+  try {
+    const changed = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('workspace watcher did not observe the write')), 2500)
+      stop = store.watchChanges(() => { clearTimeout(timeout); resolve() })
+    })
+    mkdirSync(join(workspace, 'reports'))
+    writeFileSync(join(workspace, 'reports', 'analysis.md'), '# changed externally')
+    await changed
+    assert.equal(store.listFiles().find(file => file.path === 'reports/analysis.md')?.content, '# changed externally')
+  } finally {
+    stop()
     rmSync(root, { recursive: true, force: true })
   }
 })

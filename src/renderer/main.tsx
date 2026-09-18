@@ -1,15 +1,15 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ArrowsInSimple, ArrowsLeftRight, ArrowsOutSimple, Briefcase, Browsers, ChatCircleDots, CheckCircle, ClockCounterClockwise, FileText, FolderOpen, GearSix, ListChecks, MagnifyingGlass, Pause, Play, Plus, SidebarSimple, SignIn, Sparkle, SquaresFour, UserList, UsersThree, WarningCircle, X } from '@phosphor-icons/react'
+import { ArrowClockwise, ArrowsInSimple, ArrowsLeftRight, ArrowsOutSimple, Briefcase, Browsers, CaretDown, CaretRight, ChatCircleDots, CheckCircle, ClockCounterClockwise, FileText, Folder, FolderOpen, GearSix, ListChecks, MagicWand, MagnifyingGlass, Pause, Play, Plus, SidebarSimple, SignIn, Sparkle, SquaresFour, UserList, UsersThree, WarningCircle, X } from '@phosphor-icons/react'
 import './style.css'
 
 type Platform = 'boss' | 'liepin'
 type BrowserMode = 'collapsed' | 'split' | 'fullscreen'
-type NavId = 'chat' | 'jobs' | 'talent' | 'tasks' | 'records' | 'accounts' | 'settings'
+type NavId = 'chat' | 'jobs' | 'talent' | 'tasks' | 'skills' | 'records' | 'accounts' | 'settings'
 const navItems = [
   { id: 'chat' as const, label: 'AI 工作台', icon: ChatCircleDots }, { id: 'jobs' as const, label: '岗位管理', icon: Briefcase },
   { id: 'talent' as const, label: '人才库', icon: UsersThree }, { id: 'tasks' as const, label: '招聘任务', icon: ListChecks },
-  { id: 'records' as const, label: '招聘记录', icon: ClockCounterClockwise }, { id: 'accounts' as const, label: '平台账号', icon: Browsers },
+  { id: 'skills' as const, label: '招聘技能', icon: MagicWand }, { id: 'records' as const, label: '招聘记录', icon: ClockCounterClockwise }, { id: 'accounts' as const, label: '平台账号', icon: Browsers },
   { id: 'settings' as const, label: '设置', icon: GearSix },
 ]
 const pageTitles: Record<NavId, { title: string; subtitle: string }> = {
@@ -17,6 +17,7 @@ const pageTitles: Record<NavId, { title: string; subtitle: string }> = {
   jobs: { title: '岗位管理', subtitle: '维护岗位条件，所有候选人判断都以已保存版本为准。' },
   talent: { title: '人才库', subtitle: '查看当前线索、简历快照和跨平台分析结果。' },
   tasks: { title: '招聘任务', subtitle: '跟踪搜索、读取、分析和人工确认的执行状态。' },
+  skills: { title: '招聘技能', subtitle: '把验证过的招聘流程沉淀为可理解、可调整、可重复执行的技能。' },
   records: { title: '招聘记录', subtitle: '复核带来源和原文证据的候选人判断。' },
   accounts: { title: '平台账号', subtitle: '管理招聘平台会话、页面状态与人工接管。' },
   settings: { title: '设置', subtitle: '查看本机运行时、安全边界和数据策略。' },
@@ -34,12 +35,31 @@ function IconButton({ title, ...props }: React.ButtonHTMLAttributes<HTMLButtonEl
     className={['icon-tooltip', props.className].filter(Boolean).join(' ')} />
 }
 
+type FileSort = 'name' | 'modified'
+function sortFileEntries(entries: WorkspaceTreeEntry[], sort: FileSort): WorkspaceTreeEntry[] {
+  return [...entries].sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind === 'directory' ? -1 : 1
+    return sort === 'name'
+      ? left.name.localeCompare(right.name, 'zh-CN', { numeric: true, sensitivity: 'base' })
+      : right.updatedAt.localeCompare(left.updatedAt) || left.name.localeCompare(right.name, 'zh-CN', { numeric: true })
+  })
+}
+
+function compactModifiedAt(value: string): string {
+  return new Date(value).toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function FileTreeRows(p: { entries: WorkspaceTreeEntry[]; directories: Record<string, WorkspaceTreeEntry[]>; sort: FileSort; depth?: number; expanded: Set<string>; loading: Set<string>; selected?: string; toggle: (path: string) => void; select: (path: string) => void }) {
+  return <>{sortFileEntries(p.entries, p.sort).map(node => node.kind === 'directory' ? <React.Fragment key={`d:${node.path}`}><button className="file-tree-row directory" style={{ '--tree-depth': p.depth ?? 0 } as React.CSSProperties} title={node.path} onClick={() => p.toggle(node.path)}><span className="file-tree-name">{p.expanded.has(node.path) ? <CaretDown size={12} /> : <CaretRight size={12} />}<Folder size={16} weight="fill" /><span>{node.name}</span></span><time>{p.loading.has(node.path) ? '读取中…' : compactModifiedAt(node.updatedAt)}</time></button>{p.expanded.has(node.path) && <FileTreeRows {...p} entries={p.directories[node.path] ?? []} depth={(p.depth ?? 0) + 1} />}</React.Fragment> : <button key={`f:${node.path}`} className={`file-tree-row file ${p.selected === node.path ? 'active' : ''}`} style={{ '--tree-depth': p.depth ?? 0 } as React.CSSProperties} title={node.path} onClick={() => p.select(node.path)}><span className="file-tree-name"><span className="file-tree-spacer" /><FileText size={16} /><span>{node.name}</span></span><time>{compactModifiedAt(node.updatedAt)}</time></button>)}</>
+}
+
 function App() {
   const [status, setStatus] = useState<AgentHrStatus>({})
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   const [activeNav, setActiveNav] = useState<NavId>('chat')
   const [talentPool, setTalentPool] = useState<CandidateRecord[]>([])
   const [tasks, setTasks] = useState<RecruitmentTask[]>([])
+  const [skills, setSkills] = useState<RecruitmentSkill[]>([])
   const [events, setEvents] = useState<RecruitmentEvent[]>([])
   const [resume, setResume] = useState<OpenResume | null>(null)
   const [jobBrief, setJobBrief] = useState<JobBrief>(emptyJob)
@@ -49,6 +69,13 @@ function App() {
   const [assessmentScope, setAssessmentScope] = useState<'active' | 'all'>('active')
   const [workFiles, setWorkFiles] = useState<WorkspaceFile[]>([])
   const [selectedFile, setSelectedFile] = useState('')
+  const [selectedTreeFile, setSelectedTreeFile] = useState<WorkspaceFile | null>(null)
+  const [fileSort, setFileSort] = useState<FileSort>('name')
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set())
+  const [treeDirectories, setTreeDirectories] = useState<Record<string, WorkspaceTreeEntry[]>>({ '': [] })
+  const [loadingFolders, setLoadingFolders] = useState<Set<string>>(new Set())
+  const expandedFoldersRef = useRef<Set<string>>(new Set())
+  const selectedFileRef = useRef('')
   const [layoutDraft, setLayoutDraft] = useState<{ navWidth?: number; rightWidth?: number }>({})
 
   function applyJobList(value: JobList) {
@@ -64,15 +91,18 @@ function App() {
     void window.agenthr.listAssessments('active').then(setAssessments).catch(e => setError(String(e)))
     void window.agenthr.listCandidates('active').then(setTalentPool).catch(e => setError(String(e)))
     void window.agenthr.listTasks('all').then(setTasks).catch(e => setError(String(e)))
+    void window.agenthr.listSkills().then(setSkills).catch(e => setError(String(e)))
     void window.agenthr.listRecruitmentEvents().then(setEvents).catch(e => setError(String(e)))
     void window.agenthr.listWorkspaceFiles().then(setWorkFiles).catch(e => setError(String(e)))
+    void loadDirectory('').catch(e => setError(String(e)))
     const stopStatus = window.agenthr.onStatus(setStatus)
     const stopJobs = window.agenthr.onJobsChanged(() => void window.agenthr.listJobs().then(applyJobList).catch(e => setError(String(e))))
     const stopCandidates = window.agenthr.onCandidatesChanged(() => void window.agenthr.listCandidates('active').then(setTalentPool).catch(e => setError(String(e))))
     const stopTasks = window.agenthr.onTasksChanged(() => void window.agenthr.listTasks('all').then(setTasks).catch(e => setError(String(e))))
+    const stopSkills = window.agenthr.onSkillsChanged(() => void window.agenthr.listSkills().then(setSkills).catch(e => setError(String(e))))
     const stopRecords = window.agenthr.onRecordsChanged(() => { void window.agenthr.listAssessments('active').then(setAssessments); void window.agenthr.listRecruitmentEvents().then(setEvents) })
-    const stopWorkspace = window.agenthr.onWorkspaceChanged(() => { void window.agenthr.getStatus().then(setStatus); void window.agenthr.listWorkspaceFiles().then(setWorkFiles).catch(e => setError(String(e))) })
-    return () => { stopStatus(); stopJobs(); stopCandidates(); stopTasks(); stopRecords(); stopWorkspace() }
+    const stopWorkspace = window.agenthr.onWorkspaceChanged(() => { void window.agenthr.getStatus().then(setStatus); void refreshFiles().catch(e => setError(String(e))) })
+    return () => { stopStatus(); stopJobs(); stopCandidates(); stopTasks(); stopSkills(); stopRecords(); stopWorkspace() }
   }, [])
   useEffect(() => { setResume(null) }, [status.browser?.platform, status.browser?.url, status.browser?.loading])
   async function run(action: () => Promise<void>) { setBusy(true); setError(''); try { await action() } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) } }
@@ -81,14 +111,60 @@ function App() {
     if (id !== 'chat') {
       applyJobList(await window.agenthr.listJobs()); setAssessments(await window.agenthr.listAssessments(assessmentScope))
       setTalentPool(await window.agenthr.listCandidates('active')); setTasks(await window.agenthr.listTasks('all')); setEvents(await window.agenthr.listRecruitmentEvents())
+      if (id === 'skills') setSkills(await window.agenthr.listSkills())
     }
   }
   async function fillQuickPrompt(prompt: string) { await navigate('chat'); await window.agenthr.insertDshPrompt(prompt) }
   async function setBrowserMode(mode: BrowserMode) { await window.agenthr.setBrowserMode(mode) }
   async function openRecruitmentBrowser(mode: BrowserMode) { await window.agenthr.setRightTab('browser'); await setBrowserMode(mode) }
   async function openBrowserPage(page: 'login' | 'recommend' | 'messages') { await window.agenthr.setRightTab('browser'); await setBrowserMode(page === 'login' ? 'fullscreen' : 'split'); await window.agenthr.openPage(page) }
-  async function pickFiles() { const files = await window.agenthr.pickFiles(); if (files.length) { setWorkFiles(files); setSelectedFile(files[0].path); await window.agenthr.setRightTab('files') } }
-  async function chooseWorkspace() { await window.agenthr.chooseWorkspace(); setWorkFiles(await window.agenthr.listWorkspaceFiles()); setSelectedFile(''); await window.agenthr.setRightTab('files') }
+  async function loadDirectory(path: string): Promise<void> {
+    setLoadingFolders(current => new Set(current).add(path))
+    try {
+      const entries = await window.agenthr.listWorkspaceDirectory(path)
+      setTreeDirectories(current => ({ ...current, [path]: entries }))
+    } finally {
+      setLoadingFolders(current => { const next = new Set(current); next.delete(path); return next })
+    }
+  }
+  async function selectTreeFile(path: string): Promise<void> {
+    selectedFileRef.current = path
+    setSelectedFile(path)
+    setSelectedTreeFile(await window.agenthr.readWorkspaceFile(path))
+  }
+  async function pickFiles() {
+    const files = await window.agenthr.pickFiles()
+    if (files.length) { setWorkFiles(files); await refreshFiles(); await selectTreeFile(files[0].path); await window.agenthr.setRightTab('files') }
+  }
+  async function chooseWorkspace() {
+    await window.agenthr.chooseWorkspace()
+    expandedFoldersRef.current = new Set(); selectedFileRef.current = ''
+    setExpandedFolders(new Set()); setSelectedFile(''); setSelectedTreeFile(null); setTreeDirectories({ '': [] })
+    await refreshFiles(); await window.agenthr.setRightTab('files')
+  }
+  async function refreshFiles(): Promise<void> {
+    const paths = ['', ...expandedFoldersRef.current]
+    const [files, directories] = await Promise.all([
+      window.agenthr.listWorkspaceFiles(),
+      Promise.all(paths.map(async path => {
+        try { return [path, await window.agenthr.listWorkspaceDirectory(path)] as const }
+        catch { return null }
+      })),
+    ])
+    setWorkFiles(files)
+    setTreeDirectories(Object.fromEntries(directories.filter((entry): entry is readonly [string, WorkspaceTreeEntry[]] => entry !== null)))
+    if (selectedFileRef.current) {
+      try { setSelectedTreeFile(await window.agenthr.readWorkspaceFile(selectedFileRef.current)) }
+      catch { selectedFileRef.current = ''; setSelectedFile(''); setSelectedTreeFile(null) }
+    }
+  }
+  function toggleFolder(path: string) {
+    const next = new Set(expandedFoldersRef.current)
+    if (next.has(path)) next.delete(path)
+    else { next.add(path); if (!(path in treeDirectories)) void loadDirectory(path).catch(e => setError(String(e))) }
+    expandedFoldersRef.current = next
+    setExpandedFolders(next)
+  }
   function startResize(pane: 'nav' | 'right', start: React.PointerEvent<HTMLDivElement>) {
     start.preventDefault()
     const handle = start.currentTarget
@@ -113,11 +189,11 @@ function App() {
   const drawerStyle = browserMode === 'split' ? { width: rightPaneWidth } : browserMode === 'fullscreen' ? { left: layoutDraft.navWidth ?? shell.navWidth, width: `calc(100vw - ${layoutDraft.navWidth ?? shell.navWidth}px)` } : undefined
   const workspaceStyle = browserMode === 'split' ? { marginRight: rightPaneWidth } : undefined
 
-  const file = workFiles.find(item => item.path === selectedFile) ?? workFiles[0]
+  const file = selectedTreeFile
   return <div className={`app-shell browser-${browserMode} ${shell.navCollapsed ? 'nav-collapsed' : ''}`} style={{ '--nav-width': `${layoutDraft.navWidth ?? shell.navWidth}px` } as React.CSSProperties}>
     <aside className="sidebar"><div className="sidebar-top-drag" />
       <div className="brand"><span className="brand-mark"><Sparkle weight="fill" /></span><span className="brand-name">AgentHR</span><IconButton className="nav-collapse" aria-label={shell.navCollapsed ? '展开导航' : '收起导航'} title={shell.navCollapsed ? '展开导航' : '收起导航'} onClick={() => void run(() => window.agenthr.setPaneLayout({ navCollapsed: !shell.navCollapsed }))}><SidebarSimple size={17} /></IconButton></div>
-      <nav aria-label="主导航"><div className="nav-group-label">工作空间</div>{navItems.slice(0, 5).map(item => <button key={item.id} title={item.label} aria-label={item.label} aria-current={activeNav === item.id ? 'page' : undefined} className={activeNav === item.id ? 'active' : ''} onClick={() => void run(() => navigate(item.id))}><item.icon size={18} weight={activeNav === item.id ? 'fill' : 'regular'} /><span>{item.label}</span>{item.id === 'records' && pendingReviews > 0 && <b>{pendingReviews}</b>}</button>)}<div className="nav-group-label account-label">系统</div>{navItems.slice(5).map(item => <button key={item.id} title={item.label} aria-label={item.label} aria-current={activeNav === item.id ? 'page' : undefined} className={activeNav === item.id ? 'active' : ''} onClick={() => void run(() => navigate(item.id))}><item.icon size={18} weight={activeNav === item.id ? 'fill' : 'regular'} /><span>{item.label}</span></button>)}</nav>
+      <nav aria-label="主导航"><div className="nav-group-label">工作空间</div>{navItems.slice(0, 6).map(item => <button key={item.id} title={item.label} aria-label={item.label} aria-current={activeNav === item.id ? 'page' : undefined} className={activeNav === item.id ? 'active' : ''} onClick={() => void run(() => navigate(item.id))}><item.icon size={18} weight={activeNav === item.id ? 'fill' : 'regular'} /><span>{item.label}</span>{item.id === 'records' && pendingReviews > 0 && <b>{pendingReviews}</b>}</button>)}<div className="nav-group-label account-label">系统</div>{navItems.slice(6).map(item => <button key={item.id} title={item.label} aria-label={item.label} aria-current={activeNav === item.id ? 'page' : undefined} className={activeNav === item.id ? 'active' : ''} onClick={() => void run(() => navigate(item.id))}><item.icon size={18} weight={activeNav === item.id ? 'fill' : 'regular'} /><span>{item.label}</span></button>)}</nav>
       <div className="sidebar-footer"><span className={`status-light ${dshPhase}`} /><div><strong>DSH {dshLabel}</strong><small>{activeJob ? activeJob.role : '尚未选择岗位'}</small></div></div>
     </aside>{!shell.navCollapsed && <div className="pane-resize nav-resize" role="separator" aria-label="拖拽调整导航栏宽度" aria-orientation="vertical" onPointerDown={event => startResize('nav', event)} />}
     <div className="shell-chrome"><div className="shell-chrome-context"><span>{page.title}</span>{activeJob && <small title={activeJob.role}>当前岗位：{activeJob.role}</small>}</div><div className="shell-chrome-actions">{error && <IconButton className="chrome-error" title={error} aria-label="关闭错误提示" onClick={() => setError('')}><WarningCircle size={17} /></IconButton>}<IconButton className="chrome-icon" aria-label={browserMode === 'fullscreen' ? '退出专注视图' : '专注右侧面板'} title={browserMode === 'fullscreen' ? '退出专注视图' : '专注右侧面板'} disabled={browserMode === 'collapsed'} onClick={() => void run(() => setBrowserMode(browserMode === 'fullscreen' ? 'split' : 'fullscreen'))}>{browserMode === 'fullscreen' ? <ArrowsInSimple size={18} /> : <ArrowsOutSimple size={18} />}</IconButton><IconButton className="chrome-icon" aria-label="收起右侧面板" title="收起右侧面板" disabled={browserMode === 'collapsed'} onClick={() => void run(() => setBrowserMode('collapsed'))}><SquaresFour size={18} /></IconButton><IconButton className={`chrome-icon ${browserMode !== 'collapsed' ? 'active' : ''}`} aria-label={browserMode === 'collapsed' ? '展开右侧面板' : '切换右侧面板'} title={browserMode === 'collapsed' ? '展开右侧面板' : '切换右侧面板'} onClick={() => void run(() => browserMode === 'collapsed' ? window.agenthr.setRightTab(shell.rightTab) : window.agenthr.setRightTab(shell.rightTab === 'files' ? 'browser' : 'files'))}><SidebarSimple size={19} /></IconButton></div></div>
@@ -127,12 +203,13 @@ function App() {
       {activeNav === 'jobs' && <JobPage busy={busy} jobList={jobList} jobBrief={jobBrief} criteriaInput={criteriaInput} saved={jobBriefSaved} isNew={newJob} activeJob={activeJob} setJobBrief={setJobBrief} setCriteriaInput={setCriteriaInput} setSaved={setJobBriefSaved} applyJobList={applyJobList} setNewJob={setNewJob} run={run} fillQuickPrompt={fillQuickPrompt} />}
       {activeNav === 'talent' && <TalentPage candidates={talentPool} setCandidates={setTalentPool} resume={resume} setResume={setResume} run={run} setBrowserMode={openRecruitmentBrowser} />}
       {activeNav === 'tasks' && <TaskPage activeJob={activeJob} jobs={jobList.jobs} platform={platform} tasks={tasks} setTasks={setTasks} workFiles={workFiles} run={run} openAgent={async (id, mode) => { await window.agenthr.workOnTask(id, mode); await navigate('chat') }} />}
+      {activeNav === 'skills' && <SkillsPage skills={skills} setSkills={setSkills} activeJob={activeJob} run={run} optimize={fillQuickPrompt} start={async (id, parameters) => { await window.agenthr.runSkill(id, parameters); await navigate('chat') }} />}
       {activeNav === 'records' && <RecordsPage assessments={assessments} events={events} scope={assessmentScope} setScope={setAssessmentScope} setAssessments={setAssessments} run={run} />}
       {activeNav === 'accounts' && <AccountPage status={status} platform={platform} control={shell.browserControl} run={run} setBrowserMode={openRecruitmentBrowser} />}
       {activeNav === 'settings' && <div className="content-scroll narrow"><section className="surface settings-list"><h2>运行与安全</h2><div className="workspace-setting"><span>本地工作目录</span><span className="workspace-path" title={status.workspace?.path}>{status.workspace?.path || '尚未设置'}</span><button className="secondary-button" onClick={() => void run(chooseWorkspace)}>更改目录</button></div><div><span>AI 运行时</span><strong>DSH {dshLabel}</strong></div><div><span>招聘网站会话</span><strong>本机独立保存</strong></div><div><span>页面隔离</span><strong>Sandbox + Context Isolation</strong></div><div><span>下载与文件写入</span><strong>需要用户授权</strong></div><div><span>外部消息</span><strong>默认禁止自动发送</strong></div>{status.dsh?.detail && <p>{status.dsh.detail}</p>}</section></div>}
     </main>
     {browserMode === 'split' && <div className="pane-resize right-resize" role="separator" aria-label="拖拽调整右侧面板宽度" aria-orientation="vertical" style={{ right: rightPaneWidth }} onPointerDown={event => startResize('right', event)} />}
-    {browserMode !== 'collapsed' && <aside className={`browser-drawer ${browserMode}`} style={drawerStyle}><div className="browser-toolbar"><div className="right-tab-strip" role="tablist" aria-label="右侧工作区"><IconButton role="tab" aria-selected={shell.rightTab === 'files'} className={shell.rightTab === 'files' ? 'active' : ''} aria-label="文件" title="文件" onClick={() => void run(() => window.agenthr.setRightTab('files'))}><FolderOpen size={19} /></IconButton><IconButton role="tab" aria-selected={shell.rightTab === 'browser'} className={shell.rightTab === 'browser' ? 'active' : ''} aria-label="浏览器" title="浏览器" onClick={() => void run(() => window.agenthr.setRightTab('browser'))}><Browsers size={19} /></IconButton></div><div className="right-tab-title"><strong>{shell.rightTab === 'files' ? status.workspace?.name || '工作文件' : status.browser?.title || (platform === 'boss' ? 'BOSS 直聘' : '猎聘企业端')}</strong>{shell.rightTab === 'files' ? <small title={status.workspace?.path}>{status.workspace?.path || '尚未设置工作目录'}</small> : <small title={browserActivity(status.browser, shell.browserControl)}>{platform === 'boss' ? 'BOSS 直聘' : '猎聘'} · {browserActivity(status.browser, shell.browserControl)}</small>}</div><div className="browser-controls">{shell.rightTab === 'files' ? <><IconButton aria-label="导入文件" title="导入文件到工作目录" onClick={() => void run(pickFiles)}><Plus size={17} /></IconButton><IconButton aria-label="选择工作目录" title="选择工作目录" onClick={() => void run(chooseWorkspace)}><FolderOpen size={17} /></IconButton></> : <><IconButton className="platform-switch" aria-label={platform === 'boss' ? '切换至猎聘' : '切换至 BOSS 直聘'} title={busy ? '正在处理，请稍候' : status.browser?.lastAction?.result === 'running' ? 'Agent 正在操作，请等待动作结束后切换平台' : `当前：${platform === 'boss' ? 'BOSS 直聘' : '猎聘'}；点击切换至${platform === 'boss' ? '猎聘' : 'BOSS 直聘'}`} disabled={busy || status.browser?.lastAction?.result === 'running'} onClick={() => void run(() => window.agenthr.selectPlatform(platform === 'boss' ? 'liepin' : 'boss'))}><ArrowsLeftRight size={17} /></IconButton><span className="browser-page-shortcuts" aria-label="招聘页面"><IconButton aria-label="登录页" title="登录页" onClick={() => void run(() => openBrowserPage('login'))}><SignIn size={16} /></IconButton><IconButton aria-label="候选人页" title="候选人页" onClick={() => void run(() => openBrowserPage('recommend'))}><UserList size={16} /></IconButton><IconButton aria-label="沟通页" title={platform === 'liepin' ? '猎聘沟通页尚未配置' : '沟通页'} disabled={platform === 'liepin'} onClick={() => void run(() => openBrowserPage('messages'))}><ChatCircleDots size={16} /></IconButton></span><IconButton className={shell.browserControl === 'human' ? 'takeover active' : 'takeover'} aria-label={shell.browserControl === 'human' ? '交还 Agent' : '人工接管'} title={shell.browserControl === 'human' ? '交还 Agent' : '人工接管'} onClick={() => void run(() => window.agenthr.setBrowserControl(shell.browserControl === 'human' ? 'agent' : 'human'))}>{shell.browserControl === 'human' ? <Play size={16} /> : <Pause size={16} />}</IconButton></>}<IconButton aria-label={browserMode === 'fullscreen' ? '退出全屏' : '放大右侧面板'} title={browserMode === 'fullscreen' ? '退出全屏' : '放大右侧面板'} onClick={() => void run(() => setBrowserMode(browserMode === 'fullscreen' ? 'split' : 'fullscreen'))}>{browserMode === 'fullscreen' ? <ArrowsInSimple size={17} /> : <ArrowsOutSimple size={17} />}</IconButton><IconButton aria-label="收起右侧面板" title="收起右侧面板" onClick={() => void run(() => setBrowserMode('collapsed'))}><X size={17} /></IconButton></div></div>{shell.rightTab === 'files' && <div className="file-panel" role="tabpanel"><div className="file-list">{workFiles.length === 0 ? <div className="file-empty"><FolderOpen size={28} /><strong>工作目录中还没有文件</strong><p>导入 JD、附件或备注，之后的下载也会保存到这里。</p><button onClick={() => void run(pickFiles)}><Plus size={15} />导入文件</button></div> : workFiles.map(item => <button key={item.path} className={file?.path === item.path ? 'active' : ''} title={item.path} onClick={() => setSelectedFile(item.path)}><FileText size={17} /><span>{item.path}</span></button>)}</div>{file && <div className="file-preview"><div><strong>{file.name}</strong><small>{Math.ceil(file.size / 1024)} KB · {file.path}</small></div>{file.previewable ? <pre>{file.content}</pre> : <div className="binary-preview"><FileText size={30} /><strong>此文件暂不支持内嵌预览</strong><p>文件已保存在本地工作目录中。</p></div>}</div>}</div>}</aside>}
+    {browserMode !== 'collapsed' && <aside className={`browser-drawer ${browserMode}`} style={drawerStyle}><div className="browser-toolbar"><div className="right-tab-strip" role="tablist" aria-label="右侧工作区"><IconButton role="tab" aria-selected={shell.rightTab === 'files'} className={shell.rightTab === 'files' ? 'active' : ''} aria-label="文件" title="文件" onClick={() => void run(() => window.agenthr.setRightTab('files'))}><FolderOpen size={19} /></IconButton><IconButton role="tab" aria-selected={shell.rightTab === 'browser'} className={shell.rightTab === 'browser' ? 'active' : ''} aria-label="浏览器" title="浏览器" onClick={() => void run(() => window.agenthr.setRightTab('browser'))}><Browsers size={19} /></IconButton></div><div className="right-tab-title"><strong>{shell.rightTab === 'files' ? status.workspace?.name || '工作文件' : status.browser?.title || (platform === 'boss' ? 'BOSS 直聘' : '猎聘企业端')}</strong>{shell.rightTab === 'files' ? <small title={status.workspace?.path}>{status.workspace?.path || '尚未设置工作目录'}</small> : <small title={browserActivity(status.browser, shell.browserControl)}>{platform === 'boss' ? 'BOSS 直聘' : '猎聘'} · {browserActivity(status.browser, shell.browserControl)}</small>}</div><div className="browser-controls">{shell.rightTab === 'files' ? <><IconButton aria-label="刷新文件树" title="刷新文件树" onClick={() => void run(refreshFiles)}><ArrowClockwise size={17} /></IconButton><IconButton aria-label="导入文件" title="导入文件到工作目录" onClick={() => void run(pickFiles)}><Plus size={17} /></IconButton><IconButton aria-label="选择工作目录" title="选择工作目录" onClick={() => void run(chooseWorkspace)}><FolderOpen size={17} /></IconButton></> : <><IconButton className="platform-switch" aria-label={platform === 'boss' ? '切换至猎聘' : '切换至 BOSS 直聘'} title={busy ? '正在处理，请稍候' : status.browser?.lastAction?.result === 'running' ? 'Agent 正在操作，请等待动作结束后切换平台' : `当前：${platform === 'boss' ? 'BOSS 直聘' : '猎聘'}；点击切换至${platform === 'boss' ? '猎聘' : 'BOSS 直聘'}`} disabled={busy || status.browser?.lastAction?.result === 'running'} onClick={() => void run(() => window.agenthr.selectPlatform(platform === 'boss' ? 'liepin' : 'boss'))}><ArrowsLeftRight size={17} /></IconButton><span className="browser-page-shortcuts" aria-label="招聘页面"><IconButton aria-label="登录页" title="登录页" onClick={() => void run(() => openBrowserPage('login'))}><SignIn size={16} /></IconButton><IconButton aria-label="候选人页" title="候选人页" onClick={() => void run(() => openBrowserPage('recommend'))}><UserList size={16} /></IconButton><IconButton aria-label="沟通页" title={platform === 'liepin' ? '猎聘沟通页尚未配置' : '沟通页'} disabled={platform === 'liepin'} onClick={() => void run(() => openBrowserPage('messages'))}><ChatCircleDots size={16} /></IconButton></span><IconButton className={shell.browserControl === 'human' ? 'takeover active' : 'takeover'} aria-label={shell.browserControl === 'human' ? '交还 Agent' : '人工接管'} title={shell.browserControl === 'human' ? '交还 Agent' : '人工接管'} onClick={() => void run(() => window.agenthr.setBrowserControl(shell.browserControl === 'human' ? 'agent' : 'human'))}>{shell.browserControl === 'human' ? <Play size={16} /> : <Pause size={16} />}</IconButton></>}<IconButton aria-label={browserMode === 'fullscreen' ? '退出全屏' : '放大右侧面板'} title={browserMode === 'fullscreen' ? '退出全屏' : '放大右侧面板'} onClick={() => void run(() => setBrowserMode(browserMode === 'fullscreen' ? 'split' : 'fullscreen'))}>{browserMode === 'fullscreen' ? <ArrowsInSimple size={17} /> : <ArrowsOutSimple size={17} />}</IconButton><IconButton aria-label="收起右侧面板" title="收起右侧面板" onClick={() => void run(() => setBrowserMode('collapsed'))}><X size={17} /></IconButton></div></div>{shell.rightTab === 'files' && <div className="file-panel" role="tabpanel"><div className="file-list"><div className="file-list-tools"><span>名称</span><button className={fileSort === 'name' ? 'active' : ''} onClick={() => setFileSort('name')}>按名称</button><button className={fileSort === 'modified' ? 'active' : ''} onClick={() => setFileSort('modified')}>按修改时间</button><span>修改时间</span></div>{(treeDirectories['']?.length ?? 0) === 0 && !loadingFolders.has('') ? <div className="file-empty"><FolderOpen size={28} /><strong>工作目录中还没有文件</strong><p>导入 JD、附件或备注，之后的下载也会保存到这里。</p><button onClick={() => void run(pickFiles)}><Plus size={15} />导入文件</button></div> : <div className="file-tree" role="tree"><FileTreeRows entries={treeDirectories[''] ?? []} directories={treeDirectories} sort={fileSort} expanded={expandedFolders} loading={loadingFolders} selected={file?.path} toggle={toggleFolder} select={path => void selectTreeFile(path).catch(e => setError(String(e)))} /></div>}</div>{file && <div className="file-preview"><div><strong>{file.name}</strong><small>{Math.ceil(file.size / 1024)} KB · {compactModifiedAt(file.updatedAt)} · {file.path}</small></div>{file.previewable ? <pre>{file.content}</pre> : <div className="binary-preview"><FileText size={30} /><strong>此文件暂不支持内嵌预览</strong><p>文件已保存在本地工作目录中。</p></div>}</div>}</div>}</aside>}
   </div>
 }
 
@@ -191,7 +268,10 @@ function TalentPage(p: TalentPageProps) {
         <div className="form-field-grid"><div><label htmlFor="candidate-position">期望职位</label><input id="candidate-position" value={draft.expectedPosition} placeholder="未填写" onChange={event => update('expectedPosition', event.target.value)} /></div><div><label htmlFor="candidate-salary">期望薪资</label><input id="candidate-salary" value={draft.expectedSalary} placeholder="未填写" onChange={event => update('expectedSalary', event.target.value)} /></div></div>
         <label htmlFor="candidate-tags">标签</label><input id="candidate-tags" value={draft.tags.join('，')} placeholder="用逗号分隔，最多 20 个" onChange={event => update('tags', event.target.value.split(/[，,]/u).map(item => item.trim()).filter(Boolean))} />
         <label htmlFor="candidate-notes">招聘备注</label><textarea id="candidate-notes" value={draft.notes} placeholder="记录人工判断、面试反馈或下一步信息。" onChange={event => update('notes', event.target.value)} />
-        <div className="candidate-detail-actions"><button className="secondary-button" onClick={() => void p.run(async () => { await p.setBrowserMode('split'); p.setResume(await window.agenthr.readOpenResume()) })}>读取当前简历</button><button className="primary-button" onClick={() => void p.run(async () => { await window.agenthr.updateCandidate(selected.id, selected.updatedAt, { displayName: draft.displayName, currentCompany: draft.currentCompany, currentTitle: draft.currentTitle, location: draft.location, expectedSalary: draft.expectedSalary, expectedPosition: draft.expectedPosition, tags: draft.tags, notes: draft.notes }); await refresh() })}>保存资料</button></div>
+        <div className="candidate-detail-actions"><button className="secondary-button" onClick={() => void p.run(async () => { await p.setBrowserMode('split'); const resume = await window.agenthr.readOpenResume(); p.setResume(resume); setDraft(current => current ? { ...current,
+          displayName: resume.name || current.displayName, currentCompany: resume.currentCompany || current.currentCompany,
+          currentTitle: resume.currentTitle || current.currentTitle, location: resume.location || current.location,
+          expectedSalary: resume.expectedSalary || current.expectedSalary, expectedPosition: resume.expectedPosition || current.expectedPosition } : current) })}>读取当前简历</button><button className="primary-button" onClick={() => void p.run(async () => { await window.agenthr.updateCandidate(selected.id, selected.updatedAt, { displayName: draft.displayName, currentCompany: draft.currentCompany, currentTitle: draft.currentTitle, location: draft.location, expectedSalary: draft.expectedSalary, expectedPosition: draft.expectedPosition, tags: draft.tags, notes: draft.notes }); await refresh() })}>保存资料</button></div>
         {p.resume && <details className="resume-disclosure"><summary>{p.resume.name || '当前简历'}的页面快照</summary><div className="resume-export"><span>保存后可在右侧文件栏及 DSH 当前工作目录中使用。</span><button className="secondary-button" onClick={() => void p.run(async () => { await window.agenthr.saveOpenResume(selected.id); await window.agenthr.setRightTab('files') })}>保存到工作目录</button></div><pre>{p.resume.text}</pre></details>}
         <div className="merge-area"><span className="section-label">人工合并</span><p>只在确认两个来源属于同一人时使用。来源、岗位关联、标签和备注会合并到当前候选人。</p><div className="field-row"><select aria-label="选择重复候选人" value={mergeTargetId} onChange={event => { setMergeTargetId(event.target.value); setConfirmingMerge(false) }}><option value="">选择重复记录</option>{p.candidates.filter(candidate => candidate.id !== selected.id).map(candidate => <option value={candidate.id} key={candidate.id}>{candidate.displayName}（{candidate.sourcePlatforms.join(' + ')}）</option>)}</select><button className="danger-quiet" disabled={!mergeTargetId} onClick={() => setConfirmingMerge(true)}>准备合并</button></div>
           {confirmingMerge && mergeTargetId && <div className="merge-confirm"><WarningCircle size={18} /><div><strong>确认合并候选人？</strong><p>重复记录会被移除，此操作会写入审计记录。</p></div><button className="secondary-button" onClick={() => setConfirmingMerge(false)}>取消</button><button className="danger-button" onClick={() => void p.run(async () => { const duplicate = p.candidates.find(candidate => candidate.id === mergeTargetId); if (!duplicate) throw new Error('重复候选人已变化'); await window.agenthr.mergeCandidates({ primaryId: selected.id, duplicateId: duplicate.id, expectedPrimaryUpdatedAt: selected.updatedAt, expectedDuplicateUpdatedAt: duplicate.updatedAt, confirmed: true }); await refresh(); setConfirmingMerge(false) })}>确认合并</button></div>}
@@ -203,6 +283,41 @@ function TalentPage(p: TalentPageProps) {
 
 function stageLabel(stage: CandidateRecord['stage']): string {
   return { lead: '线索', screening: '筛选', interview: '面试', offer: 'Offer', hired: '已录用', rejected: '已淘汰' }[stage]
+}
+
+function SkillsPage(p: { skills: RecruitmentSkill[]; setSkills: (value: RecruitmentSkill[]) => void; activeJob?: JobRecord; run: (fn: () => Promise<void>) => Promise<void>; optimize: (prompt: string) => Promise<void>; start: (id: string, parameters: Record<string, string | number | boolean>) => Promise<void> }) {
+  const [category, setCategory] = useState<RecruitmentSkill['category']>('general')
+  const [selectedId, setSelectedId] = useState('')
+  const [parameters, setParameters] = useState<Record<string, string | number | boolean>>({})
+  const visibleSkills = p.skills.filter(skill => skill.category === category)
+  const selected = visibleSkills.find(skill => skill.id === selectedId) ?? visibleSkills[0] ?? null
+  useEffect(() => {
+    if (!selected) { setSelectedId(''); setParameters({}); return }
+    if (selected.id !== selectedId) setSelectedId(selected.id)
+    setParameters(Object.fromEntries(selected.definition.parameters.map(parameter => [parameter.key, parameter.defaultValue])))
+  }, [selected?.id, selected?.activeVersion])
+
+  async function refresh() { p.setSkills(await window.agenthr.listSkills()) }
+  function optimizationPrompt(skill: RecruitmentSkill): string {
+    return `请和我一起优化 AgentHR 招聘技能「${skill.name}」（技能 ID：${skill.id}，当前版本：v${skill.activeVersion}）。\n\n技能描述：${skill.description}\n执行方式：${skill.executionMode === 'deterministic' ? '确定性工作流' : 'Agent 引导'}\n步骤：\n${skill.definition.steps.map((step, index) => `${index + 1}. ${step.title}：${step.description}；验证：${step.verification}`).join('\n')}\n成功标准：\n${skill.definition.successCriteria.map(item => `- ${item}`).join('\n')}\n权限边界：\n${skill.definition.permissions.map(item => `- ${item}`).join('\n')}\n失败策略：${skill.definition.failureStrategy}\n\n先询问我希望改善的问题，再给出具体修改建议和版本差异。不要生成 selector、任意脚本或任意 CDP 命令；只调整业务参数、语义步骤、校验条件和权限边界。当前版本回写尚未开放，请把最终建议整理成可审核的技能变更草案。`
+  }
+
+  return <div className="content-scroll"><div className="skill-layout">
+    <aside className="surface skill-index">
+      <div className="skill-index-head"><div><h2>技能</h2><span>{p.skills.length} 个沉淀流程</span></div><MagicWand size={20} /></div>
+      <div className="skill-categories" role="tablist" aria-label="技能分类">{([['general', '通用'], ['boss', 'BOSS 直聘'], ['liepin', '猎聘']] as const).map(([id, label]) => <button key={id} role="tab" aria-selected={category === id} className={category === id ? 'active' : ''} onClick={() => { setCategory(id); setSelectedId('') }}><span>{label}</span><b>{p.skills.filter(skill => skill.category === id).length}</b></button>)}</div>
+      <div className="skill-list">{visibleSkills.map(skill => <button key={skill.id} className={selected?.id === skill.id ? 'active' : ''} onClick={() => setSelectedId(skill.id)}><span className={`skill-icon ${skill.status}`}><MagicWand size={15} /></span><span><strong>{skill.name}</strong><small>{skill.category === 'boss' ? 'BOSS 直聘专用' : skill.category === 'liepin' ? '猎聘专用' : '跨平台通用'} · v{skill.activeVersion}</small></span><i>{skill.status === 'enabled' ? '已启用' : skill.status === 'needs_repair' ? '待修复' : skill.status === 'draft' ? '待审核' : '已停用'}</i></button>)}</div>
+    </aside>
+    <section className="surface skill-detail">{!selected ? <Empty icon={MagicWand} title="还没有招聘技能" body="Agent 成功完成的常用流程，会在审核后沉淀到这里。" /> : <>
+      <div className="skill-detail-head"><div><span>{selected.executionMode === 'deterministic' ? '确定性工作流' : 'Agent 引导工作流'} · v{selected.activeVersion}</span><h2>{selected.name}</h2><p>{selected.description}</p></div><div className="skill-actions"><button className="secondary-button" onClick={() => void p.run(async () => { await window.agenthr.setSkillStatus(selected.id, selected.status === 'enabled' ? 'disabled' : 'enabled', selected.updatedAt); await refresh() })}>{selected.status === 'enabled' ? '停用技能' : '启用技能'}</button><button className="secondary-button" onClick={() => void p.run(() => p.optimize(optimizationPrompt(selected)))}><ChatCircleDots size={15} />与 Agent 优化</button></div></div>
+      <div className="skill-meta"><span>风险级别<strong>{selected.riskLevel === 'read_only' ? '只读' : selected.riskLevel === 'local_write' ? '仅本地写入' : '外部动作'}</strong></span><span>历史证据<strong>{selected.sourceTaskCount} 条</strong></span><span>运行 / 成功<strong>{selected.runCount} / {selected.successCount}</strong></span><span>连续失败<strong>{selected.consecutiveFailures}</strong></span><span>最近运行<strong>{selected.lastRunAt ? new Date(selected.lastRunAt).toLocaleString() : '尚未运行'}</strong></span></div>
+      {selected.definition.parameters.length > 0 && <section className="skill-section"><div className="skill-section-title"><h3>运行参数</h3><span>运行前可以调整</span></div><div className="skill-parameter-grid">{selected.definition.parameters.map(parameter => <label key={parameter.key}><span>{parameter.label}{parameter.required ? ' *' : ''}</span>{parameter.type === 'boolean' ? <input type="checkbox" checked={Boolean(parameters[parameter.key])} onChange={event => setParameters({ ...parameters, [parameter.key]: event.target.checked })} /> : <input type={parameter.type} min={parameter.type === 'number' ? 0 : undefined} max={parameter.type === 'number' ? 1000 : undefined} value={String(parameters[parameter.key] ?? '')} placeholder={parameter.description} onChange={event => setParameters({ ...parameters, [parameter.key]: parameter.type === 'number' ? Number(event.target.value) : event.target.value })} />}<small>{parameter.description}</small></label>)}</div></section>}
+      <section className="skill-section"><div className="skill-section-title"><h3>执行步骤</h3><span>{selected.definition.steps.length} 步</span></div><ol className="skill-steps">{selected.definition.steps.map(step => <li key={step.id}><span>{step.title}</span><p>{step.description}</p><small><CheckCircle size={13} />{step.verification}</small></li>)}</ol></section>
+      <div className="skill-rule-grid"><section className="skill-section"><div className="skill-section-title"><h3>成功标准</h3></div><ul>{selected.definition.successCriteria.map(item => <li key={item}>{item}</li>)}</ul></section><section className="skill-section"><div className="skill-section-title"><h3>权限边界</h3></div><ul>{selected.definition.permissions.map(item => <li key={item}>{item}</li>)}</ul></section></div>
+      <div className="skill-failure"><WarningCircle size={17} /><div><strong>失败时如何处理</strong><p>{selected.definition.failureStrategy}</p></div></div>
+      <div className="skill-run-footer"><p>{p.activeJob ? `将关联当前岗位：${p.activeJob.role}` : '运行前需要先选择当前岗位'}。技能只创建受审计的招聘任务，不会自动向候选人发送消息。</p><button className="primary-button" disabled={selected.status !== 'enabled' || !p.activeJob} onClick={() => void p.run(() => p.start(selected.id, parameters))}><Play size={15} />运行技能</button></div>
+    </>}</section>
+  </div></div>
 }
 
 type TaskPageProps = { activeJob?: JobRecord; jobs: JobRecord[]; platform: Platform; tasks: RecruitmentTask[]; setTasks: (value: RecruitmentTask[]) => void; workFiles: WorkspaceFile[]; run: (fn: () => Promise<void>) => Promise<void>; openAgent: (id: string, mode: 'continue' | 'new_session') => Promise<void> }
@@ -265,6 +380,7 @@ function TaskDetail(p: { detail: RecruitmentTaskDetail; jobs: JobRecord[]; run: 
     <div className="task-context-grid"><section><span>任务输入</span><p>{task.description}</p></section><aside><div><span>关联岗位</span><strong>{job?.role || '未关联岗位'}</strong></div><div><span>执行次数</span><strong>{task.runCount}</strong></div><div><span>最近更新</span><strong>{new Date(task.updatedAt).toLocaleString()}</strong></div>{task.lastBrowserUrl && <div><span>最近页面</span><strong className="task-url" title={task.lastBrowserUrl}>{task.lastBrowserUrl}</strong></div>}</aside></div>
     {p.detail.files.length > 0 && <div className="task-resources"><div><strong>关联文件</strong><span>{p.detail.files.length} 个</span></div><div className="task-resource-list">{p.detail.files.map(file => <button key={`${file.kind}-${file.path}`} title={file.path} onClick={() => void window.agenthr.setRightTab('files')}><FileText size={16} /><span>{file.path}</span><small>{file.kind === 'input' ? '输入' : '产出'}</small></button>)}</div></div>}
     {task.errorMessage && <div className="task-detail-error"><WarningCircle size={17} /><div><strong>{task.errorCode || '任务执行失败'}</strong><p>{task.errorMessage}</p></div></div>}
+    {p.detail.skillSteps && p.detail.skillSteps.length > 0 && <section className="skill-section"><div className="skill-section-title"><h3>技能执行断点</h3><span>{p.detail.skillSteps.filter(step => step.status === 'completed').length} / {p.detail.skillSteps.length} 已完成</span></div><ol className="skill-steps">{p.detail.skillSteps.map(step => <li key={step.id}><span>{step.title} · {step.status === 'pending' ? '等待' : step.status === 'running' ? '执行中' : step.status === 'completed' ? '已完成' : step.status === 'failed' ? '失败，已回退 Agent' : '已跳过'}</span>{step.evidence && <p>{step.evidence}</p>}{step.errorMessage && <small><WarningCircle size={13} />{step.errorCode}: {step.errorMessage}</small>}</li>)}</ol></section>}
     <div className="task-timeline-head"><div><h3>执行记录</h3><span>{p.detail.entries.length} 条</span></div><div>{task.status === 'running' && <button className="secondary-button" onClick={() => void p.run(() => p.setStatus(task, 'paused'))}>暂停</button>}{task.status === 'paused' && <button className="secondary-button" onClick={() => void p.run(() => p.setStatus(task, 'running'))}>恢复</button>}{task.status !== 'completed' && task.status !== 'cancelled' && <button className="secondary-button" onClick={() => void p.run(() => p.setStatus(task, 'completed'))}>标记完成</button>}</div></div>
     <div className="task-timeline"><article className="task-entry input"><span className="task-entry-icon"><UserList size={15} /></span><div><header><strong>用户输入</strong><time>{new Date(task.createdAt).toLocaleString()}</time></header><p>{task.description}</p></div></article>{p.detail.entries.map(entry => <article className={`task-entry ${entry.kind}`} key={entry.id}><span className="task-entry-icon">{entry.kind === 'browser_result' ? <Browsers size={15} /> : entry.kind === 'analysis' ? <Sparkle size={15} /> : <FileText size={15} />}</span><div><header><span>{kindLabel[entry.kind]}</span><strong>{entry.title}</strong><time>{new Date(entry.createdAt).toLocaleString()}</time></header><p>{entry.content}</p>{entry.sourceUrl && <a href={entry.sourceUrl} onClick={event => event.preventDefault()} title={entry.sourceUrl}>{entry.sourceUrl}</a>}</div></article>)}</div>
     {p.detail.entries.length === 0 && <div className="task-no-results"><Sparkle size={20} /><div><strong>等待执行结果</strong><p>继续任务后，Agent 的分析和浏览器发现会写回这里。</p></div></div>}

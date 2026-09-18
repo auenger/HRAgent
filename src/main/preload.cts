@@ -10,6 +10,8 @@ const api = {
   setPaneLayout: (layout: { navWidth?: number; rightWidth?: number; navCollapsed?: boolean }) => ipcRenderer.invoke('agenthr:set-pane-layout', layout),
   pickFiles: () => ipcRenderer.invoke('agenthr:pick-files'),
   listWorkspaceFiles: () => ipcRenderer.invoke('agenthr:list-workspace-files'),
+  listWorkspaceDirectory: (path = '') => ipcRenderer.invoke('agenthr:list-workspace-directory', path),
+  readWorkspaceFile: (path: string) => ipcRenderer.invoke('agenthr:read-workspace-file', path),
   chooseWorkspace: () => ipcRenderer.invoke('agenthr:choose-workspace'),
   setBrowserControl: (control: 'agent' | 'human') => ipcRenderer.invoke('agenthr:set-browser-control', control),
   listVisibleCandidates: () => ipcRenderer.invoke('agenthr:list-visible-candidates'),
@@ -30,11 +32,15 @@ const api = {
   listAssessments: (scope: 'active' | 'all') => ipcRenderer.invoke('agenthr:list-assessments', scope),
   setReviewStatus: (id: string, status: 'draft' | 'needs_clarification' | 'reviewed') => ipcRenderer.invoke('agenthr:set-review-status', id, status),
   listTasks: (scope: 'active' | 'all') => ipcRenderer.invoke('agenthr:list-tasks', scope),
+  listSkills: () => ipcRenderer.invoke('agenthr:list-skills'),
+  setSkillStatus: (id: string, status: 'enabled' | 'disabled', expectedUpdatedAt: string) => ipcRenderer.invoke('agenthr:set-skill-status', id, status, expectedUpdatedAt),
+  runSkill: (id: string, parameters: Record<string, string | number | boolean>) => ipcRenderer.invoke('agenthr:run-skill', id, parameters),
   createTask: (value: unknown) => ipcRenderer.invoke('agenthr:create-task', value),
   getTask: (id: string) => ipcRenderer.invoke('agenthr:get-task', id),
   addTaskNote: (id: string, value: unknown) => ipcRenderer.invoke('agenthr:add-task-note', id, value),
   workOnTask: (id: string, mode: 'continue' | 'new_session') => ipcRenderer.invoke('agenthr:work-on-task', id, mode),
   setTaskStatus: (id: string, status: 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled', expectedUpdatedAt: string) => ipcRenderer.invoke('agenthr:set-task-status', id, status, expectedUpdatedAt),
+  recordSkillStep: (id: string, value: unknown) => ipcRenderer.invoke('agenthr:record-skill-step', id, value),
   listRecruitmentEvents: () => ipcRenderer.invoke('agenthr:list-recruitment-events'),
   listPlatformValidations: () => ipcRenderer.invoke('agenthr:list-platform-validations'),
   validatePlatform: (check: 'candidate_list' | 'resume_detail') => ipcRenderer.invoke('agenthr:validate-platform', check),
@@ -62,6 +68,11 @@ const api = {
     const handler = () => listener()
     ipcRenderer.on('agenthr:tasks-changed', handler)
     return () => ipcRenderer.removeListener('agenthr:tasks-changed', handler)
+  },
+  onSkillsChanged: (listener: () => void) => {
+    const handler = () => listener()
+    ipcRenderer.on('agenthr:skills-changed', handler)
+    return () => ipcRenderer.removeListener('agenthr:skills-changed', handler)
   },
   onRecordsChanged: (listener: () => void) => {
     const handler = () => listener()
