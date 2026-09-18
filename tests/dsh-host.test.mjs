@@ -7,7 +7,7 @@ import { DshHost, parseDshReadyUrl, resolveDshCli } from '../dist/main/dsh-host.
 
 test('DSH Host resolves the pinned local runtime without a sibling checkout', () => {
   const cli = resolveDshCli()
-  assert.match(cli ?? '', /@deepseek-ai[\/]dsh[\/]lib[\/]bin\.js$/)
+  assert.ok((cli ?? '').endsWith(join('@deepseek-ai', 'dsh', 'lib', 'bin.js')))
   assert.equal(resolveDshCli('/definitely/missing/dsh/bin.js'), undefined)
 })
 

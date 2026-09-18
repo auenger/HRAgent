@@ -80,14 +80,14 @@ try {
     'agenthr_save_job_brief',
     'agenthr_save_visible_candidates',
     'agenthr_update_candidate',
-    'bash',
+    process.platform === 'win32' ? 'pwsh' : 'bash',
     'edit',
     'glob',
     'grep',
     'read',
     'read_image',
     'write',
-  ])
+  ].sort())
   process.stdout.write(`AgentHR preset exposes ${names.length} tools, including standard shell/filesystem surfaces and recruitment tools.\n`)
 } finally {
   await handle?.dispose()

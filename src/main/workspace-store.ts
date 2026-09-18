@@ -40,6 +40,10 @@ function canonicalDirectory(path: string): string {
   return canonical
 }
 
+function workspaceRelative(root: string, path: string): string {
+  return relative(root, path).split(sep).join('/')
+}
+
 function detectDshWorkspace(userData: string): string | undefined {
   const storage = join(userData, 'dsh', 'storages', 'workspace.json')
   if (!existsSync(storage)) return undefined
@@ -147,7 +151,7 @@ export class WorkspaceStore {
       if (SKIP_DIRECTORIES.has(entry.name) || (!entry.isDirectory() && !entry.isFile())) continue
       const absolute = join(directory, entry.name)
       const info = statSync(absolute)
-      const path = relative(this.workspace.path, absolute)
+      const path = workspaceRelative(this.workspace.path, absolute)
       const extension = extname(entry.name).toLowerCase()
       entries.push({
         path, name: entry.name, kind: entry.isDirectory() ? 'directory' : 'file', size: entry.isFile() ? info.size : 0,
@@ -163,7 +167,7 @@ export class WorkspaceStore {
     if (!info.isFile()) throw new Error('工作目录节点不是文件')
     const name = basename(absolute)
     const previewable = TEXT_EXTENSIONS.has(extname(name).toLowerCase()) && info.size <= 1024 * 1024
-    return { path: relative(this.workspace.path, absolute), name, size: info.size, updatedAt: info.mtime.toISOString(), previewable,
+    return { path: workspaceRelative(this.workspace.path, absolute), name, size: info.size, updatedAt: info.mtime.toISOString(), previewable,
       content: previewable ? readFileSync(absolute, 'utf8') : '' }
   }
 
@@ -219,7 +223,7 @@ export class WorkspaceStore {
         const info = statSync(absolute)
         const previewable = TEXT_EXTENSIONS.has(extname(entry.name).toLowerCase()) && info.size <= 1024 * 1024
         files.push({
-          path: relative(this.workspace.path, absolute), name: entry.name, size: info.size,
+          path: workspaceRelative(this.workspace.path, absolute), name: entry.name, size: info.size,
           updatedAt: info.mtime.toISOString(), previewable,
           content: previewable ? readFileSync(absolute, 'utf8') : '',
         })

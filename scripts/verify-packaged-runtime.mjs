@@ -70,8 +70,8 @@ try {
   if (!/^\d+\.\d+\.\d+/u.test(version)) throw new Error('Packaged DSH version is invalid')
   const patch = join(temporary, 'agenthr.cordis.patch.yml')
   const config = run([cli, '--profile', 'web', '--patch', patch, '--dump-config'])
-  if (!config.includes('agenthr-browser-tools') || !config.includes('default: agenthr') || !config.includes('includeShippedRoot: true')) {
-    throw new Error('Packaged DSH did not load the isolated AgentHR preset and plugin')
+  if (!config.includes('agenthr-browser-tools') || !config.includes('default: agenthr') || !config.includes('includeShippedRoot: true') || !config.includes('includeUserRoot: true')) {
+    throw new Error('Packaged DSH did not load the AgentHR preset and plugin configuration')
   }
   for (const name of runtimePackages) {
     const profilePackage = join(temporary, 'profiles', 'node_modules', name)
